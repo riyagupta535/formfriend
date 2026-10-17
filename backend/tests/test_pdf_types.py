@@ -96,21 +96,19 @@ def scanned_pdf():
 
 
 def test_scanned_pdf_ocr(monkeypatch):
-    from types import SimpleNamespace
-    monkeypatch.setattr('app.parser.shutil.which', lambda _: '/bin/tesseract')
-    tsv = 'level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n'
-    tsv += '5\t1\t1\t1\t1\t1\t100\t200\t120\t50\t95\tFull\n'
-    tsv += '5\t1\t1\t1\t1\t2\t230\t200\t120\t50\t95\tname:\n'
-    monkeypatch.setattr('app.parser.subprocess.run', lambda *a, **k: SimpleNamespace(returncode=0, stdout=tsv))
+    from app.ocr import OCRLine
+    monkeypatch.setattr('app.ocr._ocr_page', lambda _: [
+        OCRLine('Full name:', pymupdf.Rect(40, 80, 140, 100), .95),
+    ])
     result = extract_pdf(scanned_pdf())
     assert result.fields[0].original_question == 'Full name:'
     assert result.fields[0].source_rect == [40, 80, 140, 100]
     assert any('OCR' in warning for warning in result.warnings)
 
 
-def test_missing_ocr(monkeypatch):
-    monkeypatch.setattr('app.parser.shutil.which', lambda _: None)
-    with pytest.raises(ValueError, match='Install Tesseract'):
+def test_unreadable_scan(monkeypatch):
+    monkeypatch.setattr('app.ocr._ocr_page', lambda _: [])
+    with pytest.raises(ValueError, match='No questions'):
         extract_pdf(scanned_pdf())
 
 

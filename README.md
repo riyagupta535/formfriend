@@ -27,6 +27,20 @@ Open http://localhost:3000. Keep port 8000 local; this prototype has no
 production authentication. Set NEXT_PUBLIC_API_URL in frontend/.env.local
 if your backend address differs.
 
+To inspect the deterministic extraction result without starting the API or
+calling an LLM:
+
+```sh
+backend/.venv/bin/python backend/scripts/extract_questions.py path/to/form.pdf
+```
+
+The JSON includes a stable field ID, explicit printed question number and section
+title when available, the inferred original label, answer type, PDF field names,
+page/rectangle source reference, nearby source text, extraction confidence, OCR
+confidence when applicable, and whether the source was a fillable widget, regular
+PDF text layer, or scanned page. Related
+checkbox options are returned as one choice question.
+
 Without STEP_API_KEY the UI explicitly labels its mock mode. Set the key
 in the root .env to use Step 5 Preview; no other model is substituted.
 STEP_BASE_URL and STEP_MODEL are configurable. Real-provider calls require
@@ -60,23 +74,29 @@ Printed question detection uses labels and punctuation, so it can miss questions
 or mistake headings for questions. Check the extracted questions and source
 previews. Pages with native controls use their field labels to avoid duplicates;
 additional printed questions on those same pages are not detected automatically.
-Scanned pages need local Tesseract OCR. Limits: 10 MB, 30 pages, and 100 questions
+Limits: 10 MB, 30 pages, and 100 questions
 per PDF. Blank, unreadable, or password-locked PDFs produce clear errors.
 Read-only fields, signature fields, and action buttons are skipped without
 rejecting other controls. The app cannot sign PDFs or preserve the validity of
 existing digital signatures after editing. Multi-select values are stored using
 standard AcroForm arrays; viewers need to regenerate their appearances.
-
+Scanned PDF fields include OCR confidence and source bounding boxes. The OCR
+prototype stops after the first detected form page to avoid processing long
+instruction appendices.
 DOCX extraction recognizes paragraphs with question marks, colons, or blank
 answer lines; export appends answers to those paragraphs while retaining the
 other document files. It does not map Word content controls or reproduce page
-numbers. Screenshots use local Tesseract OCR to identify question lines and
-export a text answer sheet. OCR is heuristic: check extracted questions before
-using the output. Screenshot users are prompted to upload a fillable version.
+numbers. Screenshots and scanned PDFs use the bundled RapidOCR runtime to find
+numbered prompts, common identity/address fields, and question-like labels.
+Screenshot answers export as a text answer sheet. OCR is heuristic, so check
+every extracted question against the source image. No separate Tesseract
+installation is required.
 
-Install the `tesseract` executable on the backend host for screenshots and scanned PDF uploads
-(for example, `brew install tesseract` on macOS). Missing OCR is reported in
-the upload UI. No extra Python packages are needed.
+Upload up to 10 PNG/JPG screenshots together, in page order, for one form.
+Each image may be up to 10 MB and the batch may be up to 30 MB. Questions in
+overlapping regions are compared using normalized labels, printed question
+numbers, section identity, and fuzzy text similarity. The higher-confidence OCR
+copy is retained, along with its source screenshot number and rectangle.
 
 Read-aloud exclusively uses the ElevenLabs voice configured by
 `ELEVENLABS_API_KEY` and `ELEVENLABS_VOICE_ID` in the root `.env`. Restart the
