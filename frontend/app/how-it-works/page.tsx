@@ -12,8 +12,8 @@ const steps = [
     number: "01",
     icon: "↥",
     title: "Bring your form",
-    description: "Choose a fillable PDF, Word document, or a clear screenshot. Drag it onto the upload page or choose a file from your device.",
-    detail: "PDF, DOCX, PNG, and JPG files up to 10 MB. PDFs need fillable text fields; Word questions are identified from question marks, colons, and blank answer lines.",
+    description: "Choose a PDF, Word document, or a clear screenshot. Drag it onto the upload page or choose a file from your device.",
+    detail: "PDF, DOCX, PNG, and JPG files up to 10 MB. PDFs can contain text fields, checkboxes, radio buttons, dropdowns, printed questions, or scanned pages. Scanned pages use OCR. Word questions are identified from question marks, colons, and blank answer lines.",
   },
   {
     number: "02",
@@ -27,7 +27,7 @@ const steps = [
     icon: "✓",
     title: "Check, edit, and download",
     description: "Review all your answers together and change anything you need. When you’re ready, download your document.",
-    detail: "PDF answers fill the original text fields. Word answers are added beside matching question paragraphs. Screenshots produce a text answer sheet; upload a fillable version to complete the original form.",
+    detail: "Fillable PDF controls are completed directly. Printed or scanned PDF questions get an answer sheet appended to the original pages. Word answers are added beside matching question paragraphs. Screenshots produce a text answer sheet; upload a fillable version to complete the original form.",
   },
 ];
 
