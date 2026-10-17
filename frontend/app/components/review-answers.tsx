@@ -61,7 +61,7 @@ export default function ReviewAnswers({ session, onClear }: {session: ReviewSess
           <label id={`review-${index}-label`} htmlFor={`review-${index}`}><span>{String(index + 1).padStart(2, "0")}</span>{field.original_question}</label>
           {field.simplified_question && field.simplified_question !== field.original_question && <p className="review-simple">{field.simplified_question}</p>}
           <AnswerInput id={`review-${index}`} field={field} value={values[field.field_id]} onChange={value => edit(field.field_id, value)} disabled={busy}/>
-          <small>{!values[field.field_id]?.trim() ? "No answer provided · " : ""}{session.document_type === "image" ? "Screenshot" : "Source page"} {field.source_page}</small>
+          <small>{!values[field.field_id]?.trim() ? "No answer provided · " : ""}{field.source_page > 0 ? `${session.document_type === "image" ? "Screenshot" : "Source page"} ${field.source_page}` : "Source page not provided"}</small>
         </div>)}
       </section>
       <aside className="download-card"><Mascot small/><h3>Looking good, friend.</h3>

@@ -48,7 +48,8 @@ def answer_sheet_pdf(session):
         if field.answer_type == 'multichoice' and field.user_response:
             value = ', '.join(json.loads(field.user_response)) or '[No answer provided]'
         source = 'Screenshot' if session.document_type == 'image' else 'Source page'
-        content = f'{index}. {field.original_question}\n{source} {field.source_page}\nAnswer: {value}\n'
+        reference = f'{source} {field.source_page}' if field.source_page > 0 else 'Source page not provided'
+        content = f'{index}. {field.original_question}\n{reference}\nAnswer: {value}\n'
         for line in content.split('\n'):
             lines.extend(textwrap.wrap(line, width=78, break_long_words=True) or [''])
     with pymupdf.open() as document:
@@ -75,19 +76,26 @@ async def export_review(key: str, body: ReviewedExport):
     from .main import get_session, sessions, documents
     original = get_session(key)
     before = original.model_dump()
+    from .agent_tools import visible_fields, apply_review
+    expected_fields = visible_fields(original) if original.agent_state else original.fields
     ids = [answer.field_id for answer in body.answers]
-    if len(ids) != len(set(ids)) or set(ids) != {f.field_id for f in original.fields}:
+    if len(ids) != len(set(ids)) or set(ids) != {f.field_id for f in expected_fields}:
         raise HTTPException(422, 'Review must include each form field exactly once. Refresh and try again.')
     updated = original.model_copy(deep=True)
     values = {answer.field_id: answer.value for answer in body.answers}
+    if updated.agent_state:
+        apply_review(updated, values)
     for field in updated.fields:
-        value = values[field.field_id]
+        if field.field_id not in values:
+            continue
+        value = field.user_response if updated.agent_state else values[field.field_id]
         validate_value(field, value)
         field.user_response = field.interpreted_value = value
         field.confirmed = bool(value.strip())
         field.status = 'answered' if value.strip() else 'skipped'
     try:
-        pdf = await asyncio.to_thread(reviewed_pdf, updated, documents[key])
+        export_snapshot = updated.model_copy(update={'fields': visible_fields(updated)}) if updated.agent_state else updated
+        pdf = await asyncio.to_thread(reviewed_pdf, export_snapshot, documents[key])
     except Exception:
         raise HTTPException(502, 'The PDF could not be created. Your edits are still here; please try again.') from None
     if get_session(key) is not original or original.model_dump() != before:
