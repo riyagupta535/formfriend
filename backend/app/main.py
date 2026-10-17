@@ -17,7 +17,7 @@ from .parser import extract_fields
 from .conversation import mode, simplify
 
 app = FastAPI(title="FormFriend")
-app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000"],
+app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000", "http://localhost:3001"],
                    allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type"])
 # Memory-only sessions; expire after one hour, capped for this local prototype.
 sessions: dict[str, tuple[float, Session]] = {}
@@ -137,3 +137,6 @@ def clear(key: str):
     sessions.pop(key, None)
     documents.pop(key, None)
     return {"cleared": True}
+
+from .voice import router as voice_router
+app.include_router(voice_router)

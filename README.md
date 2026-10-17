@@ -91,8 +91,45 @@ verify the production build with `npm run build -- --webpack`.
 
 After cloning this repository, follow the setup above. Each teammate needs
 their own local environment; do not commit API keys or real user forms.
-Use Node.js 22 LTS or newer and Python 3.11 or newer.
+Use Node.js 22 LTS (22.12 or newer within Node 22) and Python 3.11 or newer.
+If using nvm, run `nvm install` and `nvm use` from the project root.
 
 Create a feature branch for each task, push it, and open a pull request
 against main. Run backend tests and the frontend build before requesting
 review. Use the synthetic PDF in examples/ for demos.
+
+## Independent voice controls and demo
+
+The `/questions` workflow uses its own read-aloud controls and browser voice
+fallback. The reusable controls and `/voice-demo` below use ElevenLabs only
+for playback and report an error when it is unavailable.
+
+Set ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID in the root .env, then
+restart the backend. Select “Read question aloud” to play a supplied
+question through ElevenLabs. Select “Answer with microphone” to dictate
+in a browser supporting SpeechRecognition (typically Chrome; availability
+varies). Grant microphone permission. Recognition may use the browser
+vendor's remote service. Audio playback stops microphone capture and vice
+versa. Stop, mute, navigation, and unmount cancel active voice work.
+
+Edit the transcript in the answer box and explicitly confirm to save it
+against the original field ID. Missing TTS credentials produce a labeled
+unavailable message; no substitute voice provider is used. Typed answers
+remain available. This milestone transcribes answers verbatim; semantic
+interpretation and clarification remain the conversation backend's job.
+
+The reusable frontend/components/VoiceControls.tsx accepts question,
+fieldId, answer, and onAnswer props so teammates can supply simplified
+questions independently of document extraction.
+
+### Independent voice demo
+
+With frontend and backend running, open http://localhost:3000/voice-demo.
+No upload or Step 5 credentials are needed for this route. It uses three
+sample questions and shows confirmed answers with their field IDs, ready
+for integration with the answer-processing service. Actual question audio
+requires the ElevenLabs environment variables described above.
+
+Run frontend voice interaction tests with `cd frontend && npm test`.
+Tests mock speech recognition and audio playback; they do not verify a real
+microphone or make billable ElevenLabs calls.
