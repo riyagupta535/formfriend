@@ -27,6 +27,17 @@ Open http://localhost:3000. Keep port 8000 local; this prototype has no
 production authentication. Set NEXT_PUBLIC_API_URL in frontend/.env.local
 if your backend address differs.
 
+To inspect the deterministic extraction result without starting the API or
+calling an LLM:
+
+```sh
+backend/.venv/bin/python backend/scripts/extract_questions.py path/to/form.pdf
+```
+
+The JSON includes the inferred original label, answer type, PDF field names,
+page/rectangle source reference, nearby source text, and extraction confidence.
+Related checkbox options are returned as one choice question.
+
 Without STEP_API_KEY the UI explicitly labels its mock mode. Set the key
 in the root .env to use Step 5 Preview; no other model is substituted.
 STEP_BASE_URL and STEP_MODEL are configurable. Real-provider calls require
@@ -44,8 +55,9 @@ npm run build
 
 ## Phase 1 scope
 
-Implemented: PDF size/signature checks, fillable text field extraction with
-page/bounding-box references, validated StepFun simplification responses,
+Implemented: PDF size/signature checks, fillable field extraction for text and
+choice controls with inferred labels, page/bounding-box references and source
+context, validated StepFun simplification responses,
 question-by-question UI, answer confirmation, editable review, memory-only
 sessions with a one-hour expiry, session clearing, and labeled mock mode.
 Server restart clears sessions. Never use real sensitive data for this demo.

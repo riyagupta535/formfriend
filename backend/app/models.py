@@ -5,9 +5,13 @@ class FormField(BaseModel):
     field_id: str
     original_question: str
     simplified_question: str = ""
-    answer_type: Literal["text", "number", "checkbox"] = "text"
+    answer_type: Literal["text", "number", "currency", "date", "checkbox", "choice"] = "text"
+    options: list[str] = Field(default_factory=list)
+    pdf_field_names: list[str] = Field(default_factory=list)
     source_page: int
     source_rect: list[float]
+    source_context: str = ""
+    extraction_confidence: Literal["high", "medium"] = "medium"
     user_response: str | None = None
     interpreted_value: str | None = None
     confirmed: bool = False

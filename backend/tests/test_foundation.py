@@ -19,6 +19,27 @@ def sample():
     document.close()
     return data
 
+def sample_with_unlabeled_controls():
+    document = pymupdf.open()
+    page = document.new_page()
+    page.insert_text((40, 60), "Applicant legal name")
+    text = pymupdf.Widget()
+    text.field_name = "f1_01[0]"
+    text.field_type = pymupdf.PDF_WIDGET_TYPE_TEXT
+    text.rect = pymupdf.Rect(40, 70, 300, 100)
+    page.add_widget(text)
+    for index, option in enumerate(("Single", "Married filing jointly")):
+        y = 125 + index * 24
+        checkbox = pymupdf.Widget()
+        checkbox.field_name = f"filing_status[{index}]"
+        checkbox.field_type = pymupdf.PDF_WIDGET_TYPE_CHECKBOX
+        checkbox.rect = pymupdf.Rect(40, y, 52, y + 12)
+        page.add_widget(checkbox)
+        page.insert_text((60, y + 10), option)
+    data = document.tobytes()
+    document.close()
+    return data
+
 def test_pdf_field_locations():
     fields = extract_fields(sample())
     assert len(fields) == 1
@@ -31,6 +52,19 @@ def test_nonfillable_rejected():
         doc.new_page()
         with pytest.raises(ValueError, match="No fillable"):
             extract_fields(doc.tobytes())
+
+def test_unlabeled_text_uses_nearby_page_text():
+    fields = extract_fields(sample_with_unlabeled_controls())
+    assert fields[0].original_question == "Applicant legal name"
+    assert fields[0].source_context == "Applicant legal name"
+    assert fields[0].pdf_field_names == ["f1_01[0]"]
+
+def test_related_checkboxes_are_grouped_as_one_choice():
+    fields = extract_fields(sample_with_unlabeled_controls())
+    choice = fields[1]
+    assert choice.answer_type == "choice"
+    assert choice.options == ["Single", "Married filing jointly"]
+    assert len(choice.pdf_field_names) == 2
 
 def test_mock_is_explicit(monkeypatch):
     monkeypatch.delenv("STEP_API_KEY", raising=False)

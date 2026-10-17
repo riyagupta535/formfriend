@@ -57,7 +57,10 @@ async def upload(file: UploadFile = File(...)):
         raise HTTPException(502, "The question service could not respond. Please try again.") from None
     session = Session(session_id=uuid4().hex, filename=Path(file.filename).name,
                       mode=mode(), fields=fields,
-                      warnings=["Check original field labels before answering. Text fields only in Phase 1."])
+                      warnings=[
+                          "Check inferred field labels against the original form before answering.",
+                          "Scanned PDFs still require the planned OCR pipeline.",
+                      ])
     sessions[session.session_id] = (time.monotonic(), session)
     return session
 
