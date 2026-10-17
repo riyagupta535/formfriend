@@ -1,0 +1,23 @@
+# Dependencies and build output
+node_modules/
+.next/
+out/
+dist/
+*.tsbuildinfo
+
+# Python environments and caches
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+
+# Secrets: commit only the example template
+.env
+.env.*
+!.env.example
+
+# Local/editor files
+.DS_Store
+.vscode/
+.idea/
+*.log
