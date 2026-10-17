@@ -46,8 +46,9 @@ npm run build
 
 - `/`: introduction with an animated teal mascot and a link to get started.
 - `/upload`: drag and drop a PDF, DOCX, PNG, or JPG (up to 10 MB).
-- `/questions`: simpler questions, typed or spoken answers, read-aloud with
-  mute, progress, and original field details. PDF details include a page preview
+- `/questions`: a chat with the mascot on the right, typed or spoken replies,
+  saved conversation history, editable previous answers, read-aloud with mute,
+  progress, and original field details. PDF details include a page preview
   with the current field outlined.
 - `/review`: edit answers and download the resulting document.
 
@@ -131,7 +132,7 @@ vendor's remote service. Audio playback stops microphone capture and vice
 versa. Stop, mute, navigation, and unmount cancel active voice work.
 
 Edit the transcript in the answer box and explicitly confirm to save it
-against the original field ID using “Save & continue.” Selecting another
+against the original field ID using “Send answer” (or “Send & review” for the final question). Selecting another
 question or saving cancels active audio and capture; late transcripts are
 discarded. Checkbox and choice questions offer read-aloud and their original
 answer options instead of free-form dictation. Typed answers remain available. This milestone transcribes answers verbatim; semantic

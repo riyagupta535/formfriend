@@ -142,7 +142,7 @@ export default function VoiceControls({
       }}>{muted ? "Unmute voice" : "Mute voice"}</button>
     </div>
     <p role="status" className="voice-status">{state === "Speaking" ? "Speaking · ElevenLabs" : state}</p>
-    {allowDictation ? <p className="voice-help">Your transcript appears in the answer box. Edit it, then save and continue. Microphone audio may be processed by your browser’s speech service.</p>
+    {allowDictation ? <p className="voice-help">Your words appear in the answer box. Review them before confirming your answer. Microphone audio may be processed by your browser’s speech service.</p>
       : <p className="voice-help">Listen to the question, then choose from the available answers.</p>}
     {allowDictation && !supported && <p className="voice-help">Speech recognition is unavailable in this browser. You can type your answer.</p>}
 
