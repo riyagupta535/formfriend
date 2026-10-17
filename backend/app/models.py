@@ -16,6 +16,7 @@ class FormField(BaseModel):
 class Session(BaseModel):
     session_id: str
     filename: str
+    document_type: Literal["pdf", "docx", "image"] = "pdf"
     mode: Literal["mock", "step-5-preview"]
     fields: list[FormField]
     warnings: list[str] = Field(default_factory=list)
