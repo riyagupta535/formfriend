@@ -1,7 +1,7 @@
 # FormFriend
 
 Separate Phase 1 prototype: Next.js/React/TypeScript/Tailwind frontend and
-FastAPI backend. No changes to the CS 130 project are required.
+FastAPI backend.
 
 ## Run
 
