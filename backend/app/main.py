@@ -11,7 +11,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from urllib.parse import quote
-from .documents import extract_docx, extract_image, export_document
+from .documents import extract_docx, extract_image, extract_images, export_document
 from .models import Answer, Session
 from .parser import extract_fields
 from .conversation import mode, simplify
@@ -40,25 +40,44 @@ def health():
     return {"status": "ok", "mode": mode()}
 
 @app.post("/sessions", response_model=Session)
-async def upload(file: UploadFile = File(...)):
+async def upload(file: UploadFile | None = File(default=None),
+                 files: list[UploadFile] | None = File(default=None)):
     prune()
     if len(sessions) >= 50:
         raise HTTPException(503, "Demo is busy. Please try again shortly.")
-    try:
-        data = await file.read(10 * 1024 * 1024 + 1)
-    finally:
-        await file.close()
-    if len(data) > 10 * 1024 * 1024:
-        raise HTTPException(413, "Please upload a file smaller than 10 MB.")
-    suffix = Path(file.filename or '').suffix.lower()
+    uploads = ([file] if file else []) + (files or [])
+    if not uploads:
+        raise HTTPException(400, "Choose a file to upload.")
+    if len(uploads) > 10:
+        raise HTTPException(413, "Upload no more than 10 screenshots for one form.")
+    payloads = []
+    for upload_file in uploads:
+        try:
+            payload = await upload_file.read(10 * 1024 * 1024 + 1)
+        finally:
+            await upload_file.close()
+        if len(payload) > 10 * 1024 * 1024:
+            raise HTTPException(413, "Each uploaded file must be smaller than 10 MB.")
+        payloads.append(payload)
+    if sum(len(payload) for payload in payloads) > 30 * 1024 * 1024:
+        raise HTTPException(413, "The combined screenshot upload must be smaller than 30 MB.")
+
+    suffixes = [Path(upload_file.filename or '').suffix.lower() for upload_file in uploads]
+    if len(uploads) > 1 and any(suffix not in {'.png', '.jpg', '.jpeg'} for suffix in suffixes):
+        raise HTTPException(415, "Multiple uploads must all be PNG or JPG screenshots.")
+    suffix = suffixes[0]
     document_type = 'pdf' if suffix == '.pdf' else 'docx' if suffix == '.docx' else 'image'
-    if suffix not in {'.pdf', '.docx', '.png', '.jpg', '.jpeg'}:
+    if any(item not in {'.pdf', '.docx', '.png', '.jpg', '.jpeg'} for item in suffixes):
         raise HTTPException(415, 'Please upload a PDF, DOCX, PNG, or JPG file.')
-    if suffix == '.pdf' and not data.startswith(b'%PDF-'):
+    if suffix == '.pdf' and not payloads[0].startswith(b'%PDF-'):
         raise HTTPException(415, 'This file is not a valid PDF.')
+    duplicate_count = 0
     try:
-        parser = extract_fields if document_type == 'pdf' else extract_docx if document_type == 'docx' else extract_image
-        fields = await asyncio.to_thread(parser, data)
+        if len(payloads) > 1:
+            fields, duplicate_count = await asyncio.to_thread(extract_images, payloads)
+        else:
+            parser = extract_fields if document_type == 'pdf' else extract_docx if document_type == 'docx' else extract_image
+            fields = await asyncio.to_thread(parser, payloads[0])
     except ValueError as error:
         raise HTTPException(422, str(error)) from None
     except Exception:
@@ -83,14 +102,22 @@ async def upload(file: UploadFile = File(...)):
         warnings.append(
             "OCR can miss or misread questions. Upload a fillable version to complete the original document."
         )
+        if len(payloads) > 1:
+            warnings.append(
+                f"Combined {len(payloads)} screenshots and removed {duplicate_count} overlapping question"
+                f"{'s' if duplicate_count != 1 else ''}."
+            )
     elif document_type == "docx":
         warnings.append(
             "Word questions are identified by paragraph punctuation. Page references are approximate; answers are appended to matching paragraphs."
         )
-    session = Session(session_id=uuid4().hex, filename=Path(file.filename).name, document_type=document_type,
+    filename = Path(uploads[0].filename or "upload").name
+    if len(uploads) > 1:
+        filename = f"{filename} + {len(uploads) - 1} screenshot{'s' if len(uploads) > 2 else ''}"
+    session = Session(session_id=uuid4().hex, filename=filename, document_type=document_type,
                       mode=mode(), fields=fields, warnings=warnings)
     sessions[session.session_id] = (time.monotonic(), session)
-    documents[session.session_id] = data
+    documents[session.session_id] = payloads[0]
     return session
 
 @app.get("/sessions/{key}", response_model=Session)

@@ -4,8 +4,11 @@ import pytest
 from app.parser import extract_fields
 from app.conversation import simplify
 from app.main import answer, sessions
-from app.models import Answer, Session
-from app.ocr import OCRLine, _cutoff, _label_fields, _numbered_fields
+from app.models import Answer, FormField, Session
+from app.ocr import (
+    OCRLine, _cutoff, _label_fields, _numbered_fields,
+    deduplicate_image_fields, extract_image_fields,
+)
 import time
 
 def sample():
@@ -115,6 +118,47 @@ def test_ocr_recognizes_common_unnumbered_w9_labels():
     assert fields[0].original_question == "Social security number"
     assert fields[0].source_context == "Socialsecuritynumber"
 
+def test_screenshot_ocr_extracts_labels_choices_and_numbered_lines(monkeypatch):
+    lines = [
+        OCRLine("Your first name and middle initial", pymupdf.Rect(40, 40, 250, 55), .98),
+        OCRLine("Last name", pymupdf.Rect(300, 40, 380, 55), .97),
+        OCRLine("Filing Status", pymupdf.Rect(40, 80, 140, 95), .99),
+        OCRLine("Single", pymupdf.Rect(160, 80, 220, 95), .99),
+        OCRLine("Head of household (HOH)", pymupdf.Rect(250, 80, 450, 95), .98),
+        OCRLine("1a", pymupdf.Rect(40, 130, 65, 145), .99),
+        OCRLine("Total wages", pymupdf.Rect(75, 130, 180, 145), .96),
+    ]
+    monkeypatch.setattr('app.ocr._ocr_image', lambda _: (lines, 600, 800))
+    fields = extract_image_fields(b'ignored')
+    assert next(field for field in fields if field.field_id == 'image:ocr:your-name').ocr_confidence == .98
+    filing = next(field for field in fields if field.field_id == 'image:ocr:filing-status')
+    assert filing.answer_type == 'choice'
+    assert filing.options == ['Single', 'Head of household']
+    income = next(field for field in fields if field.question_number == '1a')
+    assert income.field_id == 'image:ocr:line-1a'
+    assert income.original_question == '1a Total wages'
+
+def test_overlapping_screenshot_questions_are_deduplicated():
+    first = FormField(
+        field_id='first', question_number='1a', original_question='1a Total wages from Forms W-2',
+        source_page=1, source_rect=[10, 10, 200, 20], source_kind='ocr', ocr_confidence=.91,
+    )
+    clearer_overlap = FormField(
+        field_id='second', question_number='1a', original_question='1a Totalwages from Forms W-2',
+        source_page=1, source_rect=[10, 300, 200, 310], source_kind='ocr', ocr_confidence=.98,
+    )
+    different_line = FormField(
+        field_id='third', question_number='1b', original_question='1b Total wages from Forms W-2',
+        source_page=1, source_rect=[10, 330, 200, 340], source_kind='ocr', ocr_confidence=.99,
+    )
+    fields, removed = deduplicate_image_fields([[first], [clearer_overlap, different_line]])
+    assert removed == 1
+    assert len(fields) == 2
+    assert fields[0].ocr_confidence == .98
+    assert fields[0].source_page == 2
+    assert fields[0].field_id == 'image:ocr:1a'
+    assert fields[1].field_id == 'image:ocr:1b'
+
 def test_mock_is_explicit(monkeypatch):
     monkeypatch.delenv("STEP_API_KEY", raising=False)
     assert asyncio.run(simplify("Full name")) == "Please tell me: Full name"
@@ -210,20 +254,25 @@ def test_docx_export(monkeypatch):
         client.delete(f'/sessions/{key}')
 
 
-def test_ocr_unavailable(monkeypatch):
+def test_invalid_screenshot_rejected():
     from app.documents import extract_image
-    monkeypatch.setattr('app.documents.shutil.which', lambda _: None)
-    with pytest.raises(ValueError, match='Tesseract'):
+    with pytest.raises(ValueError, match='could not be read'):
         extract_image(b'image')
 
 
 def test_screenshot_export(monkeypatch):
-    from types import SimpleNamespace
     from fastapi.testclient import TestClient
     from app.main import app
+    from app.models import FormField
     monkeypatch.delenv('STEP_API_KEY', raising=False)
-    monkeypatch.setattr('app.documents.shutil.which', lambda _: '/bin/tesseract')
-    monkeypatch.setattr('app.documents.subprocess.run', lambda *a, **k: SimpleNamespace(returncode=0, stdout='Application\nFull name:\nWhat is your address?'))
+    monkeypatch.setattr('app.documents.extract_image_fields', lambda _: [
+        FormField(field_id='image:ocr:full-name', original_question='Full name',
+                  source_page=1, source_rect=[10, 10, 100, 20], source_kind='ocr',
+                  ocr_confidence=.98),
+        FormField(field_id='image:ocr:address', original_question='What is your address?',
+                  source_page=1, source_rect=[10, 30, 150, 40], source_kind='ocr',
+                  ocr_confidence=.97),
+    ])
     with pymupdf.open() as document:
         image = document.new_page(width=300, height=300).get_pixmap().tobytes('png')
     with TestClient(app) as client:
@@ -233,11 +282,33 @@ def test_screenshot_export(monkeypatch):
         assert session['document_type'] == 'image'
         assert len(session['fields']) == 2
         key = session['session_id']
-        client.post(f'/sessions/{key}/fields/image:0', json={'value': 'Sam'})
+        client.post(f'/sessions/{key}/fields/image:ocr:full-name', json={'value': 'Sam'})
         exported = client.get(f'/sessions/{key}/export')
-        assert 'Full name:\nSam' in exported.text
+        assert 'Full name\nSam' in exported.text
         assert '[No answer provided]' in exported.text
         client.delete(f'/sessions/{key}')
+
+
+def test_multiple_screenshot_upload(monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.models import FormField
+    monkeypatch.delenv('STEP_API_KEY', raising=False)
+    fields = [FormField(
+        field_id='image:ocr:name', original_question='Full name', source_page=1,
+        source_rect=[10, 10, 100, 20], source_kind='ocr', ocr_confidence=.98,
+    )]
+    monkeypatch.setattr('app.main.extract_images', lambda _: (fields, 3))
+    with TestClient(app) as client:
+        uploaded = client.post('/sessions', files=[
+            ('files', ('top.png', b'first', 'image/png')),
+            ('files', ('bottom.png', b'second', 'image/png')),
+        ])
+        assert uploaded.status_code == 200
+        session = uploaded.json()
+        assert session['filename'] == 'top.png + 1 screenshot'
+        assert len(session['fields']) == 1
+        assert any('removed 3 overlapping questions' in warning for warning in session['warnings'])
 
 
 def test_pdf_source_preview_and_unconfigured_speech(monkeypatch):

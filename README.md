@@ -73,14 +73,17 @@ instruction appendices.
 DOCX extraction recognizes paragraphs with question marks, colons, or blank
 answer lines; export appends answers to those paragraphs while retaining the
 other document files. It does not map Word content controls or reproduce page
-numbers. Screenshots use local Tesseract OCR to identify question lines and
-export a text answer sheet. OCR is heuristic: check extracted questions before
-using the output. Screenshot users are prompted to upload a fillable version.
+numbers. Screenshots and scanned PDFs use the bundled RapidOCR runtime to find
+numbered prompts, common identity/address fields, and question-like labels.
+Screenshot answers export as a text answer sheet. OCR is heuristic, so check
+every extracted question against the source image. No separate Tesseract
+installation is required.
 
-Install the `tesseract` executable on the backend host for screenshot uploads
-(for example, `brew install tesseract` on macOS). Missing OCR is reported in
-the upload UI. Scanned PDF OCR uses the Python dependency installed from
-`backend/requirements.txt`; it does not require the Tesseract executable.
+Upload up to 10 PNG/JPG screenshots together, in page order, for one form.
+Each image may be up to 10 MB and the batch may be up to 30 MB. Questions in
+overlapping regions are compared using normalized labels, printed question
+numbers, section identity, and fuzzy text similarity. The higher-confidence OCR
+copy is retained, along with its source screenshot number and rectangle.
 
 Read-aloud uses ElevenLabs when both `ELEVENLABS_API_KEY` and
 `ELEVENLABS_VOICE_ID` are set in the root `.env`, and otherwise falls back to
