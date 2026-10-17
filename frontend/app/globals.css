@@ -736,3 +736,7 @@ background:white}
   .site-header nav > a:first-child { display: inline-flex; }
   .how-page { padding: 35px 24px 45px; }
 }
+
+/* Match the mirrored character artwork; mouth movement follows speech volume. */
+.mascot-mouth{position:absolute;inset:0;width:100%;height:100%;transform:scaleX(-1);pointer-events:none}
+@media (prefers-reduced-motion:reduce){.mascot-mouth{display:none}}
