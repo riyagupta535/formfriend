@@ -3,6 +3,8 @@ from pydantic import BaseModel, Field
 
 class FormField(BaseModel):
     field_id: str
+    question_number: str | None = None
+    section_title: str | None = None
     original_question: str
     simplified_question: str = ""
     answer_type: Literal["text", "number", "currency", "date", "checkbox", "choice"] = "text"
@@ -11,7 +13,9 @@ class FormField(BaseModel):
     source_page: int
     source_rect: list[float]
     source_context: str = ""
-    extraction_confidence: Literal["high", "medium"] = "medium"
+    extraction_confidence: Literal["high", "medium", "low"] = "medium"
+    source_kind: Literal["fillable", "text-layer", "ocr"] = "fillable"
+    ocr_confidence: float | None = Field(default=None, ge=0, le=1)
     user_response: str | None = None
     interpreted_value: str | None = None
     confirmed: bool = False

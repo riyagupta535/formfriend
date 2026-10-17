@@ -43,7 +43,7 @@ async def upload(file: UploadFile = File(...)):
     if len(data) > 10 * 1024 * 1024:
         raise HTTPException(413, "Please upload a PDF smaller than 10 MB.")
     if not (file.filename or "").lower().endswith(".pdf") or not data.startswith(b"%PDF-"):
-        raise HTTPException(415, "Phase 1 accepts fillable PDF files only.")
+        raise HTTPException(415, "Please upload a PDF file.")
     try:
         fields = await asyncio.to_thread(extract_fields, data)
     except ValueError as error:
@@ -55,12 +55,17 @@ async def upload(file: UploadFile = File(...)):
             field.simplified_question = await simplify(field.original_question)
     except Exception:
         raise HTTPException(502, "The question service could not respond. Please try again.") from None
+    warnings = ["Check inferred field labels against the original form before answering."]
+    if any(field.source_kind in {"text-layer", "ocr"} for field in fields):
+        warnings.append(
+            "This PDF is not fillable. FormFriend can collect answers, but export must use an answer sheet."
+        )
+    if any(field.source_kind == "ocr" for field in fields):
+        warnings.append(
+            "These questions came from OCR. Check every question against the scanned page because OCR can make mistakes."
+        )
     session = Session(session_id=uuid4().hex, filename=Path(file.filename).name,
-                      mode=mode(), fields=fields,
-                      warnings=[
-                          "Check inferred field labels against the original form before answering.",
-                          "Scanned PDFs still require the planned OCR pipeline.",
-                      ])
+                      mode=mode(), fields=fields, warnings=warnings)
     sessions[session.session_id] = (time.monotonic(), session)
     return session
 

@@ -27,6 +27,13 @@ class _ExtractedWidget:
     confidence: str
 
 
+@dataclass
+class _TextBlock:
+    text: str
+    rect: pymupdf.Rect
+    block_number: int
+
+
 _SUPPORTED_TYPES = {
     pymupdf.PDF_WIDGET_TYPE_TEXT,
     pymupdf.PDF_WIDGET_TYPE_CHECKBOX,
@@ -35,6 +42,7 @@ _SUPPORTED_TYPES = {
     pymupdf.PDF_WIDGET_TYPE_LISTBOX,
 }
 _INTERNAL_NAME = re.compile(r"(?:^|\.)(?:f|c)\d+_\d+\[\d+\]$", re.IGNORECASE)
+_NUMBERED_PROMPT = re.compile(r"^(\d+[a-z]?)[.)]?\s+(.+)", re.IGNORECASE)
 
 
 def _clean_tokens(tokens: list[str]) -> str:
@@ -174,9 +182,46 @@ def _answer_type(label: str, widget_type: int, grouped: bool = False) -> str:
         return "currency"
     if "date" in lowered or "born" in lowered:
         return "date"
-    if any(word in lowered for word in ("number of", "count", "how many")):
+    if "number of" in lowered or re.search(r"\b(?:count|how many)\b", lowered):
         return "number"
     return "text"
+
+
+def _question_number(text: str) -> str | None:
+    line_code = re.search(r"\b(\d+\([a-z]\))", text, re.IGNORECASE)
+    if line_code:
+        return line_code.group(1)
+    leading = re.match(r"^\s*(\d+[a-z]?)(?:[.)]|\s)", text, re.IGNORECASE)
+    if leading:
+        return leading.group(1)
+    step = re.search(r"\bStep\s+(\d+[a-z]?)\b", text, re.IGNORECASE)
+    return step.group(1) if step else None
+
+
+def _step_section_title(text: str) -> str | None:
+    step = re.search(r"\bStep\s+(\d+[a-z]?)\b", text, re.IGNORECASE)
+    return f"Step {step.group(1)}" if step else None
+
+
+def _page_section_headings(blocks: list[_TextBlock], cutoff: float) -> list[tuple[float, str]]:
+    headings = []
+    for block in blocks:
+        if block.rect.y0 >= cutoff:
+            continue
+        match = re.match(r"^(Part\s+[IVXLC]+)\s+(.+)$", block.text, re.IGNORECASE)
+        if match:
+            headings.append((block.rect.y0, f"{match.group(1)} {match.group(2)}"))
+    return headings
+
+
+def _section_for_y(y: float, headings: list[tuple[float, str]]) -> str | None:
+    preceding = [heading for heading_y, heading in headings if heading_y <= y]
+    return preceding[-1] if preceding else None
+
+
+def _group_section_for_y(y: float, groups: list[tuple[float, float, str]]) -> str | None:
+    matches = [title for start, end, title in groups if start <= y < end]
+    return matches[-1] if matches else None
 
 
 def _checkbox_group_name(name: str) -> str:
@@ -188,6 +233,219 @@ def _union(rects: list[pymupdf.Rect]) -> pymupdf.Rect:
     for rect in rects[1:]:
         result.include_rect(rect)
     return result
+
+
+def _text_blocks(page: pymupdf.Page) -> list[_TextBlock]:
+    blocks = []
+    for raw in page.get_text("blocks", sort=True):
+        if len(raw) < 7 or raw[6] != 0:
+            continue
+        text = _clean_tokens(raw[4].split())
+        if text:
+            blocks.append(_TextBlock(text, pymupdf.Rect(raw[:4]), int(raw[5])))
+    return blocks
+
+
+def _small_boxes(page: pymupdf.Page) -> list[pymupdf.Rect]:
+    boxes = []
+    for drawing in page.get_drawings():
+        rect = pymupdf.Rect(drawing["rect"])
+        if 5 <= rect.width <= 20 and 5 <= rect.height <= 30:
+            boxes.append(rect)
+    return boxes
+
+
+def _horizontal_rules(page: pymupdf.Page) -> list[pymupdf.Rect]:
+    rules = []
+    for drawing in page.get_drawings():
+        rect = pymupdf.Rect(drawing["rect"])
+        if rect.width >= 20 and rect.height <= 1.5:
+            rules.append(rect)
+    return rules
+
+
+def _option_for_box(box: pymupdf.Rect, lines: list[_Line]) -> str | None:
+    candidates = []
+    for line in lines:
+        if not re.search(r"[A-Za-z]", line.text):
+            continue
+        if _vertical_overlap(box, line.rect) <= 0 or line.rect.x0 < box.x1 - 2:
+            continue
+        candidates.append((line.rect.x0 - box.x1, line))
+    if not candidates:
+        return None
+    gap, line = min(candidates, key=lambda candidate: candidate[0])
+    return line.text if gap <= 14 else None
+
+
+def _instruction_cutoff(page: pymupdf.Page, blocks: list[_TextBlock]) -> float:
+    headings = (
+        "general instructions", "specific instructions", "instructions for",
+        "part ii. certification", "part ii certification",
+    )
+    matches = [block.rect.y0 for block in blocks
+               if any(block.text.lower().startswith(heading) for heading in headings)]
+    return min(matches, default=page.rect.height)
+
+
+def _has_answer_geometry(rect: pymupdf.Rect, rules: list[pymupdf.Rect],
+                         boxes: list[pymupdf.Rect]) -> bool:
+    center = (rect.x0 + rect.x1) / 2
+    if any(rect.y1 - 2 <= rule.y0 <= rect.y1 + 14 and
+           rule.x1 >= rect.x1 - 2 and rule.x0 <= rect.x1 + 12 for rule in rules):
+        return True
+    if any(rect.y1 - 2 <= box.y0 <= rect.y1 + 34 and
+           box.x1 >= rect.x0 - 5 and box.x0 <= rect.x1 + 80 for box in boxes):
+        return True
+    above = [rule for rule in rules if 0 <= rect.y0 - rule.y0 <= 4 and rule.x0 <= center <= rule.x1]
+    below = [rule for rule in rules if 0 <= rule.y0 - rect.y1 <= 60 and rule.x0 <= center <= rule.x1]
+    return bool(above and below)
+
+
+def _related_line_text(selected: _Line, lines: list[_Line]) -> str:
+    related = []
+    for line in lines:
+        if line.block_number != selected.block_number or abs(line.rect.y0 - selected.rect.y0) > 18:
+            continue
+        overlap = max(0.0, min(selected.rect.x1, line.rect.x1) - max(selected.rect.x0, line.rect.x0))
+        narrow = min(selected.rect.width, line.rect.width)
+        if line is selected or abs(line.rect.x0 - selected.rect.x0) <= 8 or (narrow and overlap / narrow >= 0.5):
+            related.append(line)
+    related.sort(key=lambda line: (line.rect.y0, line.rect.x0))
+    return " ".join(dict.fromkeys(line.text for line in related))
+
+
+def _extract_text_layer_fields(document: pymupdf.Document) -> list[FormField]:
+    """Conservatively extract prompts from a non-fillable PDF text layer."""
+    fields = []
+    used_ids: dict[tuple[int, str], int] = defaultdict(int)
+    for page_number, page in enumerate(document, 1):
+        blocks = _text_blocks(page)
+        cutoff = _instruction_cutoff(page, blocks)
+        candidates = []
+        group_blocks = []
+        for block in blocks:
+            match = _NUMBERED_PROMPT.match(block.text)
+            if not match or block.rect.y0 >= cutoff:
+                continue
+            if match.group(2).strip().endswith(":"):
+                group_blocks.append((block, match.group(1), match.group(2).rstrip(":").strip()))
+                continue
+            candidates.append((block, match.group(1), match.group(2)))
+
+        drawings = page.get_drawings()
+        if len(candidates) < 3 or len(drawings) < len(candidates):
+            continue
+
+        logical_lines = _logical_lines(page)
+        boxes = _small_boxes(page)
+        rules = _horizontal_rules(page)
+        section_headings = _page_section_headings(blocks, cutoff)
+        group_sections = []
+        for group_block, identifier, title in group_blocks:
+            next_prompt_y = min(
+                (block.rect.y0 for block, _, _ in candidates if block.rect.y0 > group_block.rect.y0),
+                default=cutoff,
+            )
+            group_sections.append(
+                (group_block.rect.y0, next_prompt_y, f"{identifier} {title}")
+            )
+        used_option_blocks = set()
+        numbered_blocks = {candidate[0].block_number for candidate in candidates}
+        first_prompt_y = min(candidate[0].rect.y0 for candidate in candidates)
+
+        for index, (block, identifier, label) in enumerate(candidates):
+            later = [other.rect.y0 for other, _, _ in candidates[index + 1:]
+                     if other.rect.y0 > block.rect.y0 and
+                     max(0.0, min(block.rect.x1, other.rect.x1) - max(block.rect.x0, other.rect.x0)) > 0]
+            bottom = min(later, default=cutoff)
+            nearby_boxes = [box for box in boxes
+                            if block.rect.y0 <= box.y0 < bottom and
+                            block.rect.x0 - 5 <= box.x0 <= block.rect.x1 + 20]
+            options = []
+            for box in nearby_boxes:
+                option = _option_for_box(box, logical_lines)
+                if option and option not in options:
+                    options.append(option)
+                    used_option_blocks.update(
+                        line.block_number for line in logical_lines if line.text == option
+                    )
+            answer_type = "choice" if len(options) > 1 else (
+                "checkbox" if len(nearby_boxes) == 1 else _answer_type(label, pymupdf.PDF_WIDGET_TYPE_TEXT)
+            )
+            rects = [block.rect, *nearby_boxes]
+            source_rect = _union(rects)
+            source_context = block.text
+            if options:
+                source_context += " Options: " + "; ".join(options)
+            key = (page_number, identifier.lower())
+            used_ids[key] += 1
+            suffix = f"-{used_ids[key]}" if used_ids[key] > 1 else ""
+            fields.append(FormField(
+                field_id=f"p{page_number}:text:{identifier.lower()}{suffix}",
+                question_number=identifier,
+                section_title=_section_for_y(block.rect.y0, section_headings),
+                original_question=f"{identifier} {label}",
+                answer_type=answer_type,
+                options=options,
+                pdf_field_names=[],
+                source_page=page_number,
+                source_rect=list(source_rect),
+                source_context=source_context[:1000],
+                extraction_confidence="medium",
+                source_kind="text-layer",
+            ))
+
+        # Pick up unnumbered labels attached to blank lines, cells, or digit boxes.
+        for line in logical_lines:
+            label = line.text.strip()
+            words = label.split()
+            if (line.rect.y0 < first_prompt_y or line.rect.y0 >= cutoff or
+                    line.block_number in numbered_blocks or line.block_number in used_option_blocks):
+                continue
+            if not (1 <= len(words) <= 12 and len(label) <= 110 and re.search(r"[A-Za-z]", label)):
+                continue
+            lowered = label.lower()
+            excluded_fragments = (
+                "instructions", "note:", "part i", "taxpayer identification number",
+                "before you begin", "certification", "see specific", "page on",
+                "outside the united states",
+            )
+            if lowered in {"or", "form", "print or type.", "sign here"} or any(
+                fragment in lowered for fragment in excluded_fragments
+            ):
+                continue
+            if not _has_answer_geometry(line.rect, rules, boxes):
+                continue
+            merged = _related_line_text(line, logical_lines)
+            if any(fragment in merged.lower() for fragment in excluded_fragments):
+                continue
+            if any(field.source_page == page_number and field.original_question == merged for field in fields):
+                continue
+            key_label = re.sub(r"[^a-z0-9]+", "-", merged.lower()).strip("-")[:40] or "field"
+            key = (page_number, key_label)
+            used_ids[key] += 1
+            suffix = f"-{used_ids[key]}" if used_ids[key] > 1 else ""
+            fields.append(FormField(
+                field_id=f"p{page_number}:text:{key_label}{suffix}",
+                question_number=None,
+                section_title=(
+                    _group_section_for_y(line.rect.y0, group_sections)
+                    or _section_for_y(line.rect.y0, section_headings)
+                ),
+                original_question=merged,
+                answer_type=_answer_type(merged, pymupdf.PDF_WIDGET_TYPE_TEXT),
+                options=[],
+                pdf_field_names=[],
+                source_page=page_number,
+                source_rect=list(line.rect),
+                source_context=merged,
+                extraction_confidence="medium",
+                source_kind="text-layer",
+            ))
+
+    fields.sort(key=lambda field: (field.source_page, field.source_rect[1], field.source_rect[0]))
+    return fields
 
 
 def extract_fields(data: bytes) -> list[FormField]:
@@ -235,8 +493,21 @@ def extract_fields(data: bytes) -> list[FormField]:
                     confidence=confidence,
                 ))
 
+        if not extracted:
+            text_fields = _extract_text_layer_fields(document)
+            if text_fields:
+                if len(text_fields) > 100:
+                    raise ValueError("Please use a form with 100 fields or fewer for this demo.")
+                return text_fields
+            from .ocr import extract_ocr_fields
+            ocr_fields = extract_ocr_fields(document)
+            if ocr_fields:
+                return ocr_fields
+
     if not extracted:
-        raise ValueError("No fillable fields we can support were found. Upload a fillable PDF; OCR is planned for a later phase.")
+        raise ValueError(
+            "No fillable fields, text-based questions, or recognizable scanned questions were found."
+        )
 
     checkbox_groups: dict[tuple[int, str], list[_ExtractedWidget]] = defaultdict(list)
     ungrouped = []
@@ -251,6 +522,8 @@ def extract_fields(data: bytes) -> list[FormField]:
     for item in ungrouped:
         fields.append(FormField(
             field_id=f"p{item.page_number}:{item.xref}",
+            question_number=_question_number(f"{item.label} {item.context}"),
+            section_title=_step_section_title(item.context),
             original_question=item.label,
             answer_type=_answer_type(item.label, item.field_type),
             options=[],
@@ -270,6 +543,8 @@ def extract_fields(data: bytes) -> list[FormField]:
         context = " ".join(dict.fromkeys(item.context for item in items))[:1000]
         fields.append(FormField(
             field_id="p{}:{}".format(items[0].page_number, ",".join(str(item.xref) for item in items)),
+            question_number=_question_number(f"{question} {context}"),
+            section_title=_step_section_title(context),
             original_question=question,
             answer_type=_answer_type(question, items[0].field_type, grouped=grouped),
             options=options,

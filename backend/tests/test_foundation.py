@@ -5,6 +5,7 @@ from app.parser import extract_fields
 from app.conversation import simplify
 from app.main import answer, sessions
 from app.models import Answer, Session
+from app.ocr import OCRLine, _cutoff, _label_fields, _numbered_fields
 import time
 
 def sample():
@@ -40,6 +41,21 @@ def sample_with_unlabeled_controls():
     document.close()
     return data
 
+def sample_nonfillable_form():
+    document = pymupdf.open()
+    page = document.new_page()
+    prompts = (
+        (50, "1 Full legal name"),
+        (120, "2 Mailing address"),
+        (190, "3 Phone number"),
+    )
+    for y, prompt in prompts:
+        page.insert_text((40, y), prompt)
+        page.draw_line((40, y + 30), (350, y + 30))
+    data = document.tobytes()
+    document.close()
+    return data
+
 def test_pdf_field_locations():
     fields = extract_fields(sample())
     assert len(fields) == 1
@@ -65,6 +81,39 @@ def test_related_checkboxes_are_grouped_as_one_choice():
     assert choice.answer_type == "choice"
     assert choice.options == ["Single", "Married filing jointly"]
     assert len(choice.pdf_field_names) == 2
+
+def test_nonfillable_text_form_extracts_numbered_prompts():
+    fields = extract_fields(sample_nonfillable_form())
+    assert [field.original_question for field in fields] == [
+        "1 Full legal name", "2 Mailing address", "3 Phone number"
+    ]
+    assert all(field.source_kind == "text-layer" for field in fields)
+    assert all(field.pdf_field_names == [] for field in fields)
+    assert [field.question_number for field in fields] == ["1", "2", "3"]
+    assert all(field.section_title is None for field in fields)
+
+def test_ocr_lines_keep_question_identity_and_confidence():
+    lines = [
+        OCRLine("1Name of applicant", pymupdf.Rect(40, 50, 220, 65), .98),
+        OCRLine("2", pymupdf.Rect(40, 100, 48, 115), .96),
+        OCRLine("Mailing address", pymupdf.Rect(60, 100, 220, 115), .97),
+        OCRLine("3bEligibility confirmation", pymupdf.Rect(40, 150, 250, 165), .91),
+        OCRLine("Certification", pymupdf.Rect(40, 210, 150, 225), .99),
+        OCRLine("1.Not a form question", pymupdf.Rect(40, 240, 250, 255), .99),
+    ]
+    cutoff = _cutoff(lines, 792)
+    fields = _numbered_fields(lines, 1, 612, cutoff)
+    assert [field.question_number for field in fields] == ["1", "2", "3b"]
+    assert fields[0].original_question == "1 Name of applicant"
+    assert fields[1].original_question == "2 Mailing address"
+    assert all(field.source_kind == "ocr" for field in fields)
+    assert all(field.ocr_confidence is not None for field in fields)
+
+def test_ocr_recognizes_common_unnumbered_w9_labels():
+    line = OCRLine("Socialsecuritynumber", pymupdf.Rect(400, 300, 520, 315), .99)
+    fields = _label_fields([line], 1, 792, [])
+    assert fields[0].original_question == "Social security number"
+    assert fields[0].source_context == "Socialsecuritynumber"
 
 def test_mock_is_explicit(monkeypatch):
     monkeypatch.delenv("STEP_API_KEY", raising=False)

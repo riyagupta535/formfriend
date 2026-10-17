@@ -34,9 +34,12 @@ calling an LLM:
 backend/.venv/bin/python backend/scripts/extract_questions.py path/to/form.pdf
 ```
 
-The JSON includes the inferred original label, answer type, PDF field names,
-page/rectangle source reference, nearby source text, and extraction confidence.
-Related checkbox options are returned as one choice question.
+The JSON includes a stable field ID, explicit printed question number and section
+title when available, the inferred original label, answer type, PDF field names,
+page/rectangle source reference, nearby source text, extraction confidence, OCR
+confidence when applicable, and whether the source was a fillable widget, regular
+PDF text layer, or scanned page. Related
+checkbox options are returned as one choice question.
 
 Without STEP_API_KEY the UI explicitly labels its mock mode. Set the key
 in the root .env to use Step 5 Preview; no other model is substituted.
@@ -56,13 +59,14 @@ npm run build
 ## Phase 1 scope
 
 Implemented: PDF size/signature checks, fillable field extraction for text and
-choice controls with inferred labels, page/bounding-box references and source
-context, validated StepFun simplification responses,
+choice controls, conservative question extraction from non-fillable PDFs with
+text layers or scanned first form pages, inferred labels, page/bounding-box references and source context,
+validated StepFun simplification responses,
 question-by-question UI, answer confirmation, editable review, memory-only
 sessions with a one-hour expiry, session clearing, and labeled mock mode.
 Server restart clears sessions. Never use real sensitive data for this demo.
 
-Not yet implemented: OCR, arbitrary non-fillable PDFs, DOCX, voice input,
+Not yet implemented: multi-page scanned form stitching, DOCX, voice input,
 ElevenLabs audio, dynamic subquestions, answer interpretation/clarification,
 PDF generation, answer-sheet downloads, production session authentication,
 or deployment. Unsupported PDFs are rejected explicitly. Phase 1 does not
