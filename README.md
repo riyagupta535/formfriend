@@ -51,8 +51,21 @@ npm run build
   with the current field outlined.
 - `/review`: edit answers and download the resulting document.
 
-Fillable PDFs retain the original PDF and populate its text fields. PDFs
-with other control types or no fillable text fields are rejected explicitly.
+PDF uploads can contain text fields, checkboxes, radio groups, dropdowns,
+single- or multiple-selection lists, printed questions, and scanned pages.
+Native controls are completed in the original PDF; answers for printed or
+scanned pages are appended as a PDF answer sheet with original page references.
+Printed question detection uses labels and punctuation, so it can miss questions
+or mistake headings for questions. Check the extracted questions and source
+previews. Pages with native controls use their field labels to avoid duplicates;
+additional printed questions on those same pages are not detected automatically.
+Scanned pages need local Tesseract OCR. Limits: 10 MB, 30 pages, and 100 questions
+per PDF. Blank, unreadable, or password-locked PDFs produce clear errors.
+Read-only fields, signature fields, and action buttons are skipped without
+rejecting other controls. The app cannot sign PDFs or preserve the validity of
+existing digital signatures after editing. Multi-select values are stored using
+standard AcroForm arrays; viewers need to regenerate their appearances.
+
 DOCX extraction recognizes paragraphs with question marks, colons, or blank
 answer lines; export appends answers to those paragraphs while retaining the
 other document files. It does not map Word content controls or reproduce page
@@ -60,14 +73,16 @@ numbers. Screenshots use local Tesseract OCR to identify question lines and
 export a text answer sheet. OCR is heuristic: check extracted questions before
 using the output. Screenshot users are prompted to upload a fillable version.
 
-Install the `tesseract` executable on the backend host for screenshot uploads
+Install the `tesseract` executable on the backend host for screenshots and scanned PDF uploads
 (for example, `brew install tesseract` on macOS). Missing OCR is reported in
 the upload UI. No extra Python packages are needed.
 
-Read-aloud uses ElevenLabs when both `ELEVENLABS_API_KEY` and
-`ELEVENLABS_VOICE_ID` are set in the root `.env`, and otherwise falls back to
-browser speech synthesis. Browser autoplay restrictions can require clicking
-“Read this question.” Voice input uses the browser speech recognition API
+Read-aloud exclusively uses the ElevenLabs voice configured by
+`ELEVENLABS_API_KEY` and `ELEVENLABS_VOICE_ID` in the root `.env`. Restart the
+backend after changing these settings. StepFun is not required for voice.
+If ElevenLabs is unavailable, the page reports an error instead of changing
+to a browser voice. Browser autoplay restrictions can require clicking
+“Read question aloud.” Voice input uses the browser speech recognition API
 where available; microphone permission is required. Browser voice recognition
 may use the browser vendor's speech service. Mute preference is saved locally.
 
@@ -98,11 +113,14 @@ Create a feature branch for each task, push it, and open a pull request
 against main. Run backend tests and the frontend build before requesting
 review. Use the synthetic PDF in examples/ for demos.
 
-## Independent voice controls and demo
+## Integrated voice controls and demo
 
-The `/questions` workflow uses its own read-aloud controls and browser voice
-fallback. The reusable controls and `/voice-demo` below use ElevenLabs only
-for playback and report an error when it is unavailable.
+The `/questions` workflow and `/voice-demo` share the reusable
+`frontend/components/VoiceControls.tsx` and backend `/voice/speech` endpoint
+from the voice-conversation branch. Questions automatically play when sound
+is enabled; the mascot reacts while audio plays. Both routes use ElevenLabs
+exclusively for playback and show an error if it is unavailable. Mute
+preference is retained locally.
 
 Set ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID in the root .env, then
 restart the backend. Select “Read question aloud” to play a supplied
@@ -113,14 +131,17 @@ vendor's remote service. Audio playback stops microphone capture and vice
 versa. Stop, mute, navigation, and unmount cancel active voice work.
 
 Edit the transcript in the answer box and explicitly confirm to save it
-against the original field ID. Missing TTS credentials produce a labeled
-unavailable message; no substitute voice provider is used. Typed answers
-remain available. This milestone transcribes answers verbatim; semantic
+against the original field ID using “Save & continue.” Selecting another
+question or saving cancels active audio and capture; late transcripts are
+discarded. Checkbox and choice questions offer read-aloud and their original
+answer options instead of free-form dictation. Typed answers remain available. This milestone transcribes answers verbatim; semantic
 interpretation and clarification remain the conversation backend's job.
 
 The reusable frontend/components/VoiceControls.tsx accepts question,
-fieldId, answer, and onAnswer props so teammates can supply simplified
-questions independently of document extraction.
+fieldId, answer, and onAnswer props, plus optional autoPlay, allowDictation,
+disabled and onSpeakingChange props. Both the generic
+`POST /voice/speech` endpoint and the existing session-scoped speech endpoint
+use the same ElevenLabs provider code.
 
 ### Independent voice demo
 

@@ -26,10 +26,10 @@ def test_pdf_field_locations():
     assert fields[0].source_page == 1
     assert len(fields[0].source_rect) == 4
 
-def test_nonfillable_rejected():
+def test_empty_pdf_rejected():
     with pymupdf.open() as doc:
         doc.new_page()
-        with pytest.raises(ValueError, match="No fillable"):
+        with pytest.raises(ValueError, match="No questions"):
             extract_fields(doc.tobytes())
 
 def test_mock_is_explicit(monkeypatch):

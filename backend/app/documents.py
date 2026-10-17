@@ -2,6 +2,9 @@
 from io import BytesIO
 from pathlib import Path
 import re
+import json
+import html
+import textwrap
 import shutil
 import subprocess
 import tempfile
@@ -60,13 +63,54 @@ def extract_image(data):
 def export_document(session, data):
     if session.document_type == 'pdf':
         with pymupdf.open(stream=data, filetype='pdf') as document:
-            answers = {field.field_id: field.user_response or '' for field in session.fields}
+            answers = {reference: field for field in session.fields
+                       for reference in (field.widget_refs or [field.field_id]) if field.extraction == 'native'}
+            for number, page in enumerate(document, 1):
+                # Set off states first, then the selected radio, to preserve group selection.
+                widgets = list(page.widgets() or [])
+                for widget in widgets:
+                    field = answers.get(f'p{number}:{widget.xref}')
+                    if field is None:
+                        continue
+                    value = field.user_response or ''
+                    if widget.field_type == pymupdf.PDF_WIDGET_TYPE_RADIOBUTTON:
+                        widget.field_value = False
+                    elif widget.field_type == pymupdf.PDF_WIDGET_TYPE_CHECKBOX:
+                        widget.field_value = widget.on_state() if value == 'Yes' else 'Off'
+                    elif field.answer_type == 'multichoice':
+                        selected = json.loads(value) if value else []
+                        selected = [option for option in field.options if option in selected]
+                        # The high-level setter accepts scalars; multi-select uses
+                        # AcroForm's value array and selected option indices.
+                        document.xref_set_key(widget.xref, 'V', '[' + ' '.join(pymupdf.get_pdf_str(item) for item in selected) + ']')
+                        indices = sorted(field.options.index(item) for item in selected)
+                        document.xref_set_key(widget.xref, 'I', '[' + ' '.join(map(str, indices)) + ']')
+                        document.xref_set_key(widget.xref, 'AP', 'null')
+                        document.need_appearances(True)
+                        continue
+                    else:
+                        widget.field_value = value
+                    widget.update()
             for number, page in enumerate(document, 1):
                 for widget in page.widgets() or []:
-                    key = f'p{number}:{widget.xref}'
-                    if key in answers:
-                        widget.field_value = answers[key]
-                        widget.update()
+                    field = answers.get(f'p{number}:{widget.xref}')
+                    if field and widget.field_type == pymupdf.PDF_WIDGET_TYPE_RADIOBUTTON:
+                        if field.user_response == str(widget.on_state()):
+                            widget.field_value = widget.on_state()
+                            widget.update()
+            printed = [field for field in session.fields if field.extraction == 'printed']
+            for field in printed:
+                text = f'{field.original_question} (original page {field.source_page})\n\n{field.user_response or "[No answer provided]"}'
+                lines = []
+                for line in text.splitlines():
+                    lines.extend(textwrap.wrap(line, width=80) or [''])
+                for start in range(0, len(lines), 38):
+                    page = document.new_page(width=595, height=842)
+                    content = html.escape('\n'.join(lines[start:start + 38]))
+                    page.insert_htmlbox(pymupdf.Rect(42, 40, 553, 800),
+                        '<h2>Form Friend — answer sheet</h2><p>Use with your original form. Check all answers before submission.</p>'
+                        + '<pre>' + content + '</pre>',
+                        css='body {font-family: sans-serif; font-size: 11pt;} pre {font-family: sans-serif; white-space: pre-wrap;}')
             return document.tobytes(), 'application/pdf'
     if session.document_type == 'docx':
         root, items = paragraphs(data)

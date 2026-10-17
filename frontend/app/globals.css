@@ -736,3 +736,16 @@ background:white}
   .site-header nav > a:first-child { display: inline-flex; }
   .how-page { padding: 35px 24px 45px; }
 }
+
+.question-card select, .review-field select { width: 100%; min-height: 50px; border: 1px solid #d6dfcf; background: white; color: var(--ink); border-radius: 8px; padding: 12px; font: inherit; font-size: 14px; }
+.answer-options { display: grid; gap: 8px; }
+.question-card .answer-option, .review-field .answer-option { display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin: 0; font-size: 13px; }
+.answer-option input { accent-color: var(--teal); width: 18px; height: 18px; }
+
+.voice-controls { margin-top: 18px; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: #f1f5ec; }
+.voice-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.voice-actions button { min-height: 36px; padding: 8px 12px; border: 1px solid #cad8c5; border-radius: 20px; font-size: 11px; background: #fffefa; }
+.voice-actions button:hover:not(:disabled) { background: #e0ecdc; }
+.voice-status { font-size: 11px; color: var(--teal); margin: 12px 0 5px; }
+.voice-help { font-size: 10px; color: var(--muted); margin: 5px 0 0; }
+.voice-error { color: #9b433b; font-size: 12px; margin: 10px 0 0; }

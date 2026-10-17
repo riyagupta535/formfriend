@@ -1,6 +1,5 @@
 import asyncio
-import os
-import httpx
+import json
 import pymupdf
 import time
 from uuid import uuid4
@@ -13,7 +12,7 @@ from fastapi.responses import Response
 from urllib.parse import quote
 from .documents import extract_docx, extract_image, export_document
 from .models import Answer, Session
-from .parser import extract_fields
+from .parser import extract_pdf
 from .conversation import mode, simplify
 
 app = FastAPI(title="FormFriend")
@@ -57,8 +56,12 @@ async def upload(file: UploadFile = File(...)):
     if suffix == '.pdf' and not data.startswith(b'%PDF-'):
         raise HTTPException(415, 'This file is not a valid PDF.')
     try:
-        parser = extract_fields if document_type == 'pdf' else extract_docx if document_type == 'docx' else extract_image
-        fields = await asyncio.to_thread(parser, data)
+        pdf_warnings = []
+        if document_type == 'pdf':
+            extracted = await asyncio.to_thread(extract_pdf, data)
+            fields, pdf_warnings = extracted.fields, extracted.warnings
+        else:
+            fields = await asyncio.to_thread(extract_docx if document_type == 'docx' else extract_image, data)
     except ValueError as error:
         raise HTTPException(422, str(error)) from None
     except Exception:
@@ -70,7 +73,8 @@ async def upload(file: UploadFile = File(...)):
         raise HTTPException(502, "The question service could not respond. Please try again.") from None
     session = Session(session_id=uuid4().hex, filename=Path(file.filename).name, document_type=document_type,
                       mode=mode(), fields=fields,
-                      warnings=["Check extracted labels and answers before using your document."] +
+                      pdf_has_answer_sheet=any(f.extraction == "printed" for f in fields),
+                      warnings=["Check extracted labels and answers before using your document."] + pdf_warnings +
                       (["OCR can miss or misread questions. Upload a fillable version to complete the original document."] if document_type == "image" else
                        ["Word questions are identified by paragraph punctuation. Page references are approximate; answers are appended to matching paragraphs."] if document_type == "docx" else []))
     sessions[session.session_id] = (time.monotonic(), session)
@@ -107,18 +111,9 @@ async def speech(key: str, field_id: str):
     field = next((f for f in session.fields if f.field_id == field_id), None)
     if field is None:
         raise HTTPException(404, 'Field not found.')
-    api_key, voice = os.getenv('ELEVENLABS_API_KEY'), os.getenv('ELEVENLABS_VOICE_ID')
-    if not api_key or not voice:
-        raise HTTPException(503, 'ElevenLabs is not configured. Use browser speech instead.')
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post('https://api.elevenlabs.io/v1/text-to-speech/' + quote(voice, safe=''),
-                headers={'xi-api-key': api_key},
-                json={'text': field.simplified_question, 'model_id': 'eleven_multilingual_v2'})
-            response.raise_for_status()
-            return Response(response.content, media_type='audio/mpeg')
-    except httpx.HTTPError:
-        raise HTTPException(502, 'Voice service unavailable. Use browser speech instead.') from None
+    # Retain the session endpoint for compatibility; both UIs share the branch's provider logic.
+    from .voice import SpeechRequest, speech as create_speech
+    return await create_speech(SpeechRequest(text=field.simplified_question))
 
 @app.post("/sessions/{key}/fields/{field_id}", response_model=Session)
 def answer(key: str, field_id: str, answer: Answer):
@@ -126,6 +121,16 @@ def answer(key: str, field_id: str, answer: Answer):
     field = next((f for f in session.fields if f.field_id == field_id), None)
     if field is None:
         raise HTTPException(404, "Field not found.")
+    if answer.value.strip():
+        if field.answer_type in ('checkbox', 'choice') and answer.value not in field.options:
+            raise HTTPException(422, 'Please choose one of the available options.')
+        if field.answer_type == 'multichoice':
+            try:
+                selected = json.loads(answer.value)
+            except (ValueError, TypeError):
+                raise HTTPException(422, 'Please choose from the available options.') from None
+            if not isinstance(selected, list) or any(not isinstance(v, str) or v not in field.options for v in selected):
+                raise HTTPException(422, 'Please choose from the available options.')
     field.user_response = answer.value
     field.interpreted_value = answer.value
     field.confirmed = answer.confirmed
