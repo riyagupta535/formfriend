@@ -1,4 +1,6 @@
 "use client";
+import Mascot from "../app/components/mascot";
+import { useSpeechMouth } from "../lib/useSpeechMouth";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 type Recognition = {
@@ -15,14 +17,17 @@ type VoiceWindow = Window & {
 type Props = {
   question: string; fieldId: string; answer: string; onAnswer: (value: string) => void;
   disabled?: boolean; allowDictation?: boolean; autoPlay?: boolean;
+  showAvatar?: boolean; onMouthChange?: (value: number) => void;
   onSpeakingChange?: (speaking: boolean) => void;
 };
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 export default function VoiceControls({
   question, fieldId, answer, onAnswer, disabled = false, allowDictation = true,
-  autoPlay = false, onSpeakingChange,
+  autoPlay = false, onSpeakingChange, showAvatar = true, onMouthChange,
 }: Props) {
+  const {mouthOpen, trackAudio, stopMouth} = useSpeechMouth();
+  useEffect(() => { onMouthChange?.(mouthOpen); }, [mouthOpen, onMouthChange]);
   const [state, setState] = useState("Ready");
   const [error, setError] = useState("");
   const [supported, setSupported] = useState(false);
@@ -39,12 +44,13 @@ export default function VoiceControls({
   latestOnAnswer.current = onAnswer;
 
   const cancelWork = useCallback(() => {
+    stopMouth();
     generation.current++;
     request.current?.abort(); request.current = null;
     recognition.current?.abort(); recognition.current = null;
     audio.current?.pause(); audio.current = null;
     if (url.current) { URL.revokeObjectURL(url.current); url.current = null; }
-  }, []);
+  }, [stopMouth]);
   const stop = useCallback(() => { cancelWork(); setState("Ready"); }, [cancelWork]);
 
   useEffect(() => {
@@ -75,7 +81,7 @@ export default function VoiceControls({
       const blob = await response.blob();
       if (current !== generation.current) return;
       url.current = URL.createObjectURL(blob);
-      const player = new Audio(url.current); audio.current = player;
+      const player = new Audio(url.current); audio.current = player; trackAudio(player);
       player.onended = () => { if (current === generation.current) stop(); };
       player.onerror = () => {
         if (current === generation.current) { stop(); setError("Audio could not play. You can read the question above."); }
@@ -88,7 +94,7 @@ export default function VoiceControls({
       stop();
       setError(e instanceof Error ? e.message : "ElevenLabs audio is unavailable. Please try again.");
     }
-  }, [question, muted, disabled, stop]);
+  }, [question, muted, disabled, stop, trackAudio]);
 
   useEffect(() => {
     stop(); setError("");
@@ -129,6 +135,7 @@ export default function VoiceControls({
   }
 
   return <section className="voice-controls" aria-label="Question audio and dictation">
+    {showAvatar && <Mascot small talking={state === "Speaking"} mouthOpen={mouthOpen}/>}
     <div className="voice-actions">
       <button type="button" disabled={disabled || !preferencesReady || muted} onClick={() => void speak()}>Read question aloud</button>
       {allowDictation && <button type="button" disabled={disabled || !preferencesReady || !supported}

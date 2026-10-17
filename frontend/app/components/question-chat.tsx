@@ -32,6 +32,7 @@ function displayAnswer(field: ChatField) {
 
 export default function QuestionChat({ session, index, value, busy, onChange, onSubmit, onNavigate, onReview }: Props) {
   const [speaking, setSpeaking] = useState(false);
+  const [mouthOpen, setMouthOpen] = useState(0);
   const activeMessage = useRef<HTMLDivElement>(null);
   const field = session.fields[index];
   const answered = session.fields.filter(item => item.user_response?.trim()).length;
@@ -75,7 +76,7 @@ export default function QuestionChat({ session, index, value, busy, onChange, on
             </div>
           </div>
           <aside className="chat-mascot" aria-label="Your Form Friend companion">
-            <Mascot talking={speaking} />
+            <Mascot talking={speaking} mouthOpen={mouthOpen} />
             <div className={`chat-presence ${speaking ? "is-speaking" : ""}`}><span aria-hidden="true">●</span>{speaking ? "Talking to you…" : "I’m here for you"}</div>
           </aside>
         </div>
@@ -84,7 +85,7 @@ export default function QuestionChat({ session, index, value, busy, onChange, on
         <div className="chat-composer-heading"><label id="answer-label" htmlFor="answer">Your answer</label><span>{field.answer_type && !["text", "number"].includes(field.answer_type) ? "Choose an option below" : "Type it or say it. Your choice."}</span></div>
         <AnswerInput id="answer" field={field} value={value} onChange={onChange} disabled={busy} />
         <VoiceControls fieldId={field.field_id} question={field.simplified_question} answer={value} onAnswer={onChange}
-          disabled={busy} allowDictation={!field.answer_type || ["text", "number"].includes(field.answer_type)} autoPlay onSpeakingChange={setSpeaking} />
+          showAvatar={false} onMouthChange={setMouthOpen} disabled={busy} allowDictation={!field.answer_type || ["text", "number"].includes(field.answer_type)} autoPlay onSpeakingChange={setSpeaking} />
         <div className="chat-send-row">
           <button type="button" className="chat-back" disabled={busy || index === 0} onClick={() => onNavigate(index - 1)}>← Previous question</button>
           <button type="submit" className="button primary" disabled={busy}>

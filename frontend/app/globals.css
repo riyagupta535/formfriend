@@ -835,3 +835,5 @@ background:white}
   .chat-back { font-size: 10px; }
   .chat-composer-note { text-align: left; font-size: 9px; }
 }
+.mascot-mouth{position:absolute;inset:0;width:100%;height:100%;transform:scaleX(-1);pointer-events:none}
+@media (prefers-reduced-motion:reduce){.mascot-mouth{display:none}}
