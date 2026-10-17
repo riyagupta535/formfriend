@@ -85,12 +85,31 @@ async def upload(file: UploadFile | None = File(default=None),
         raise HTTPException(422, str(error)) from None
     except Exception:
         raise HTTPException(422, "This document could not be read. Please try another file.") from None
-    try:
-        for field in fields:
-            field.simplified_question = await simplify(field.original_question)
-    except Exception:
-        raise HTTPException(502, "The question service could not respond. Please try again.") from None
+    # Opening a form must not wait for an unbounded series of provider calls.
+    # Preserve original wording whenever simplification is slow or unavailable.
     warnings = ["Check extracted labels and answers before using your document."]
+    semaphore = asyncio.Semaphore(3)
+    simplified_ids = set()
+    for field in fields:
+        field.simplified_question = field.original_question
+    async def simplify_field(field):
+        async with semaphore:
+            try:
+                question = await simplify(field.original_question)
+            except Exception:
+                return
+            field.simplified_question = question
+            simplified_ids.add(field.field_id)
+    try:
+        await asyncio.wait_for(asyncio.gather(*(simplify_field(field) for field in fields)), timeout=20)
+    except TimeoutError:
+        pass
+    remaining = len(fields) - len(simplified_ids)
+    if remaining:
+        warnings.append(
+            f"{remaining} question(s) use the original form wording because simplification was slow or unavailable. "
+            "You can still answer and review your form."
+        )
     if document_type == "pdf" and any(
         field.source_kind in {"text-layer", "ocr"} for field in fields
     ):
@@ -189,3 +208,6 @@ def clear(key: str):
 
 from .voice import router as voice_router
 app.include_router(voice_router)
+
+from .review import router as review_router
+app.include_router(review_router)

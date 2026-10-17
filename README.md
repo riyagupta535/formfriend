@@ -175,3 +175,31 @@ requires the ElevenLabs environment variables described above.
 Run frontend voice interaction tests with `cd frontend && npm test`.
 Tests mock speech recognition and audio playback; they do not verify a real
 microphone or make billable ElevenLabs calls.
+
+## Final review and PDF export
+
+After the last answer, `/review` shows all original questions and editable
+answers, with blank fields marked clearly. Edits stay on the review page until
+export. Check **I’ve reviewed my answers** to enable **Download PDF**; changing
+an answer resets that confirmation. Blank answers are allowed and remain blank.
+
+`POST /sessions/{id}/review/export` validates the entire reviewed snapshot,
+generates the PDF, and saves the answers together only if generation succeeds.
+It rejects duplicate, missing, or unknown field IDs and invalid choice values.
+Failures leave the review edits available for retry; no partial save is made.
+
+For PDF uploads the original PDF is retained and fillable fields are populated;
+printed/scanned questions use the existing appended answer sheet. For Word and
+image uploads, this review action produces a clearly labeled PDF answer sheet,
+not a claim that the original file has been filled. The older export endpoint
+remains available for existing clients. Export does not submit an application.
+
+Upload simplification runs at most three provider calls concurrently and stops
+waiting after 20 seconds. Questions that could not be simplified retain their
+original wording, with an explicit session warning. The browser also times out
+uploads after two minutes rather than showing an endless loading state.
+
+Scanned PDFs and screenshots require the OCR dependencies. Use Python 3.11 or
+3.12 for the pinned `rapidocr-onnxruntime` package; it does not support Python
+3.13. Create your backend virtual environment with Python 3.12, then install
+`backend/requirements.txt` before starting the backend.

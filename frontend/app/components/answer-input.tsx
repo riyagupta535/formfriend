@@ -1,6 +1,6 @@
 "use client";
 export type AnswerField = {
-  answer_type?: "text" | "number" | "checkbox" | "choice" | "multichoice";
+  answer_type?: "text" | "number" | "currency" | "date" | "checkbox" | "choice" | "multichoice";
   options?: string[];
 };
 
