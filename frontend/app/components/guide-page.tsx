@@ -25,7 +25,7 @@ export default function GuidePage() {
     try { setSessionId(await startSampleSession()); }
     catch (e) { setError(e instanceof TypeError ? "Can’t reach Forma. Make sure the backend is running on port 8000." : (e as Error).message); }
   }
-  return <><Header /><main className="workflow"><Steps active={1} />
+  return <><Header compact /><main className="workflow guide-workflow"><Steps active={1} />
     {!ready ? <div className="empty-state" role="status">Finding your form…</div>
       : sessionId ? <GuidedConversation sessionId={sessionId} />
       : <div className="empty-state"><Mascot small /><h1>Let’s start with your form.</h1><p>Upload a document to talk it through, or try a short sample form.</p>

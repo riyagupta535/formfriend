@@ -119,6 +119,13 @@ def test_typed_values_are_not_guessed(client,kind,bad,good):
     assert answer(client,key,'value',good).status_code==200
 
 
+def test_invalid_date_message_is_user_facing(client):
+    key=create(client,[question('start_date',input_type='date')])
+    result=answer(client,key,'start_date','March fifth')
+    assert result.status_code==422
+    assert result.json()['detail']=='A full date in YYYY-MM-DD format is required.'
+
+
 @pytest.mark.parametrize('questions',[
     [question('duplicate'),question('duplicate')],
     [question('a',depends_on=['missing'])],

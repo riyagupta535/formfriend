@@ -129,7 +129,7 @@ def _encoded(question, value):
             if date.fromisoformat(value).isoformat() != value:
                 raise ValueError()
         except ValueError:
-            raise HTTPException(422, 'A full date in YYYY-MM-DD format is required. Ask for missing date parts.') from None
+            raise HTTPException(422, 'A full date in YYYY-MM-DD format is required.') from None
     return value
 
 

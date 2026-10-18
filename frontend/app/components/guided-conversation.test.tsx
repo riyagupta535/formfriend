@@ -28,6 +28,7 @@ it('binds session and revision, parses JSON values, and shows learned words', as
   vi.stubGlobal('fetch', fetchMock);
   render(<GuidedConversation sessionId="s1" />);
   expect(await screen.findByText('How many children under 17?')).toBeTruthy();
+  expect(screen.queryByText('A FRIEND BY YOUR SIDE. ONE QUESTION AT A TIME.')).toBeNull();
 
   await act(async () => { await tools.explain_term({ question_id: 'kids', term: 'Qualifying child', explanation: 'A child who meets the form rules.' }); });
   expect(JSON.parse(fetchMock.mock.calls.find(([u]) => u.endsWith('/explain'))![1]!.body as string))
@@ -78,6 +79,25 @@ it('shows typed input while voice is disconnected and saves directly to the back
   expect(screen.getByText('Update this answer, then press Send to continue.')).toBeTruthy();
 });
 
+it('keeps extracted helper context out of the question bubble', async () => {
+  const context = 'Form Complete Form W-4 so that your employer can withhold the correct federal income tax.';
+  const contextQuestion = {
+    ...question,
+    original_text: '(b) Social security number',
+    simplified_question: 'What is your Social Security number?',
+    help_text: context,
+  };
+  vi.stubGlobal('fetch', vi.fn((url: string) => url.endsWith('/glossary')
+    ? reply({ terms: [] })
+    : reply({ ...state(0), question: contextQuestion })));
+
+  render(<GuidedConversation sessionId="s1" />);
+
+  expect(await screen.findByText('What is your Social Security number?')).toBeTruthy();
+  expect(screen.queryByText(context)).toBeNull();
+  expect(screen.getByText('(b) Social security number')).toBeTruthy();
+});
+
 it('shows deterministic validation errors and stays on the current typed question', async () => {
   const validationQuestion = { ...question, input_type: 'text', simplified_question: 'What is your Social Security number?' };
   const validationState = { ...state(0), question: validationQuestion };
@@ -96,9 +116,13 @@ it('shows deterministic validation errors and stays on the current typed questio
   fireEvent.change(input, { target: { value: 'lkj' } });
   fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 
-  expect((await screen.findByRole('alert')).textContent).toContain(
+  const alert = await screen.findByRole('alert');
+  expect(alert.textContent).toContain(
     'Enter a 9-digit Social Security number in the format XXX-XX-XXXX.',
   );
+  const sourceToggle = screen.getByText('ⓘ What the form says');
+  expect(sourceToggle.compareDocumentPosition(alert) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(alert.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(screen.getByText('What is your Social Security number?')).toBeTruthy();
   expect((input as HTMLInputElement).value).toBe('lkj');
 });
@@ -186,7 +210,7 @@ it('shows the existing worksheet workflow instead of a generic textbox', async (
   expect(screen.getByRole('button', { name: /Help me work through the worksheet/ })).toBeTruthy();
   expect(screen.getByRole('button', { name: /leave this blank/ })).toBeTruthy();
   expect(screen.queryByLabelText('Type your answer')).toBeNull();
-  expect(screen.getByText(worksheetQuestion.help_text)).toBeTruthy();
+  expect(screen.queryByText(worksheetQuestion.help_text)).toBeNull();
 });
 
 it('shows loading instead of original wording until Gemini finishes the current question', async () => {
