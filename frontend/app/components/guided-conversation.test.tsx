@@ -219,6 +219,7 @@ it('keeps speech and typed messages in the same live conversation without restar
  expect(calls.activity).toHaveBeenCalledOnce();
  fireEvent.click(screen.getByRole('button',{name:'Send'}));
  expect(calls.send).toHaveBeenCalledWith('What does qualifying mean?');
+ fireEvent.click(screen.getByRole('button',{name:'Conversation so far'}));
  expect(screen.getByText('I have two children')).toBeTruthy();
  expect(screen.getByText('What does qualifying mean?')).toBeTruthy();
  act(()=>calls.onMessage!({source:'user',message:'Yes, both are under seventeen'}));
@@ -237,4 +238,31 @@ it('keeps the typed draft when sending to the live conversation fails',async()=>
  fireEvent.change(input,{target:{value:'My draft'}});fireEvent.click(screen.getByRole('button',{name:'Send'}));
  expect((input as HTMLInputElement).value).toBe('My draft');
  expect(screen.getByRole('alert').textContent).toContain('could not be sent');
+});
+
+it('shows what Forma says in the speech bubble and earlier answers as greyed history', async () => {
+  vi.stubGlobal('fetch', vi.fn((url: string) => url.endsWith('/sessions/s1')
+    ? reply({ fields: [
+        { field_id: 'name', simplified_question: 'What is your name?', original_question: 'Name', user_response: 'Maria Lopez', status: 'answered' },
+        { field_id: 'pets', simplified_question: 'Which pets?', original_question: 'Pets', user_response: '["Cat","Dog"]', status: 'answered' },
+        { field_id: 'kids', simplified_question: 'How many children under 17?', original_question: 'Kids', user_response: null, status: 'unanswered' }] })
+    : url.endsWith('/glossary') ? reply({ terms: [] }) : reply(state(0))));
+  render(<GuidedConversation sessionId="s1" />);
+  const toggle = await screen.findByRole('button', { name: /Earlier questions/ });
+  expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  expect(screen.getByText('Last: Cat, Dog')).toBeTruthy();
+  expect(screen.queryByText('Maria Lopez')).toBeNull();
+  fireEvent.click(toggle);
+  expect(toggle.getAttribute('aria-expanded')).toBe('true');
+  expect(screen.getByText('Maria Lopez')).toBeTruthy();
+  expect(screen.getByText('Cat, Dog')).toBeTruthy();
+  expect(screen.getAllByRole('listitem')).toHaveLength(2);
+  fireEvent.click(toggle);
+  expect(screen.queryByText('Maria Lopez')).toBeNull();
+  act(() => calls.onMessage?.({ message: '[happy] How many children do you have?', source: 'ai' }));
+  expect(screen.getByText('How many children do you have?')).toBeTruthy();
+  act(() => calls.onMessage?.({ message: 'two', source: 'user' }));
+  expect(screen.getByText('“two”')).toBeTruthy();
+  act(() => calls.onMessage?.({ message: 'Got it.', source: 'ai' }));
+  expect(screen.queryByText('“two”')).toBeNull();
 });

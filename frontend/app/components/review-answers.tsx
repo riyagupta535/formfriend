@@ -49,7 +49,7 @@ export default function ReviewAnswers({ session, onClear }: {session: ReviewSess
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       setDownloaded(true);
     } catch (e) {
-      setError(e instanceof TypeError ? "Cannot reach FormFriend. Your edits are still here. Check the backend and try again." : (e as Error).message);
+      setError(e instanceof TypeError ? "Cannot reach Forma. Your edits are still here. Check the backend and try again." : (e as Error).message);
     } finally { setBusy(false); }
   }
   return <>
@@ -58,7 +58,7 @@ export default function ReviewAnswers({ session, onClear }: {session: ReviewSess
       <section className="review-card" aria-label="Review all answers" aria-busy={busy}>
         <div className="review-title"><h2>Your answers</h2><span>{session.fields.length - missing} / {session.fields.length} answered</span></div>
         {session.fields.map((field, index) => <div className="review-field" key={field.field_id}>
-          <label id={`review-${index}-label`} htmlFor={`review-${index}`}><span>{String(index + 1).padStart(2, "0")}</span>{field.original_question}</label>
+          <label id={`review-${index}-label`} htmlFor={`review-${index}`}><span>{index + 1}</span>{field.original_question}</label>
           {field.simplified_question && field.simplified_question !== field.original_question && <p className="review-simple">{field.simplified_question}</p>}
           <AnswerInput id={`review-${index}`} field={field} value={values[field.field_id]} onChange={value => edit(field.field_id, value)} disabled={busy}/>
           <small>{!values[field.field_id]?.trim() ? "No answer provided · " : ""}{field.source_page > 0 ? `${session.document_type === "image" ? "Screenshot" : "Source page"} ${field.source_page}` : "Source page not provided"}</small>

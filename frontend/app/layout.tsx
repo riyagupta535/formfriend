@@ -1,6 +1,9 @@
 import "./globals.css";
 import type { Metadata } from "next";
-export const metadata: Metadata = { title: "FormFriend", description: "Forms, one friendly question at a time." };
+import { Lexend } from "next/font/google";
+// Lexend was designed to reduce visual stress and improve reading fluency; clean and easy to read.
+const body = Lexend({ subsets: ["latin"], variable: "--font-body", display: "swap" });
+export const metadata: Metadata = { title: "Forma", description: "Forms, one friendly question at a time." };
 export default function Layout({ children }: { children: React.ReactNode }) {
- return <html lang="en"><body>{children}</body></html>;
+ return <html lang="en" className={body.variable}><body>{children}</body></html>;
 }

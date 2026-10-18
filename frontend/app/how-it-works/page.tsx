@@ -3,27 +3,27 @@ import Link from "next/link";
 import { Footer, Header } from "../components/shell";
 
 export const metadata: Metadata = {
-  title: "How it works | Form Friend",
-  description: "Upload your form, answer simpler questions, and review your document with Form Friend.",
+  title: "How it works | Forma",
+  description: "Upload your form, answer simpler questions, and review your document with Forma.",
 };
 
 const steps = [
   {
-    number: "01",
+    number: "1",
     icon: "↥",
     title: "Bring your form",
     description: "Choose a PDF, Word document, or a clear screenshot. Drag it onto the upload page or choose a file from your device.",
     detail: "PDF, DOCX, PNG, and JPG files up to 10 MB. PDFs can contain text fields, checkboxes, radio buttons, dropdowns, printed questions, or scanned pages. Scanned pages use OCR. Word questions are identified from question marks, colons, and blank answer lines.",
   },
   {
-    number: "02",
+    number: "2",
     icon: "☏",
     title: "Take it one question at a time",
     description: "We’ll guide you through the questions in simpler language. Type an answer, or use your microphone in a supported browser.",
     detail: "Listen to questions or mute the audio. Open “See more details” to check the original wording and, for PDFs, see the field highlighted on the page. You can skip a question and come back later.",
   },
   {
-    number: "03",
+    number: "3",
     icon: "✓",
     title: "Check, edit, and download",
     description: "Review all your answers together and change anything you need. When you’re ready, download your document.",
@@ -42,7 +42,7 @@ export default function HowItWorks() {
           <p>Here’s how we’ll turn your paperwork into smaller, friendlier steps.</p>
           <Link href="/upload" className="button primary">Let’s fill out a form <span>↗</span></Link>
         </div>
-        <section className="how-grid" aria-label="How Form Friend works">
+        <section className="how-grid" aria-label="How Forma works">
           {steps.map((step) => (
             <article key={step.number}>
               <div className="card-top"><span className="feature-icon" aria-hidden="true">{step.icon}</span><span>STEP {step.number}</span></div>

@@ -90,7 +90,7 @@ def export_document(session, data):
                     page = document.new_page(width=595, height=842)
                     content = html.escape('\n'.join(lines[start:start + 38]))
                     page.insert_htmlbox(pymupdf.Rect(42, 40, 553, 800),
-                        '<h2>Form Friend — answer sheet</h2><p>Use with your original form. Check all answers before submission.</p>'
+                        '<h2>Forma — answer sheet</h2><p>Use with your original form. Check all answers before submission.</p>'
                         + '<pre>' + content + '</pre>',
                         css='body {font-family: sans-serif; font-size: 11pt;} pre {font-family: sans-serif; white-space: pre-wrap;}')
             return document.tobytes(), 'application/pdf'
