@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import ValidationError
 
 from .agent_models import (AgentSessionRequest, AgentState, ExplainRequest, FromUploadRequest, GlossaryEntry,
-                           SaveAgentAnswer, SkipAgentQuestion)
+                           SaveAgentAnswer, SkipAgentQuestion, Validation)
 from .models import FormField, Session
 from .dates import normalize_date
 from .text_utils import strip_form_reference
@@ -246,6 +246,18 @@ def next_question(session):
     question_payload = question.model_dump() if question else None
     if question is not None:
         field = fields[question.id]
+        numeric_workflow = (
+            (field.calculation and field.calculation.source_field_ids)
+            or field.worksheet or field.table_lookup or field.pay_period_calculation
+        )
+        if numeric_workflow and question.input_type not in {'number', 'currency'}:
+            # Guided calculations always produce a number. Repair old sessions
+            # and noisy extraction results before choosing an input or validating.
+            question.input_type = 'currency'
+            question.validation = Validation(kind='decimal_number', min=0)
+            field.answer_type = 'currency'
+            field.validation = question.validation.model_copy(deep=True)
+            question_payload = question.model_dump()
         subquestions = [item.model_dump() for item in field.subquestions]
         simplified_question = question.simplified_question
         help_text = question.help_text
@@ -476,8 +488,6 @@ async def skip_question(key: str, body: SkipAgentQuestion):
     session = get_agent_session(key)
     check_revision(session, body.revision)
     question, field = find_question(session, body.question_id)
-    if question.required:
-        raise HTTPException(422, 'This question is required. Offer an explanation or a follow-up instead of skipping.')
     if field.status in {'blocked', 'not_applicable'}:
         raise HTTPException(409, 'This question is not currently applicable.')
     invalidated = invalidate_dependents(session, question.id)

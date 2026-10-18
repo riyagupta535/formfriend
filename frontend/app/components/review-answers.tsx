@@ -78,7 +78,7 @@ export default function ReviewAnswers({ session, onClear }: {session: ReviewSess
     } finally { setBusy(false); }
   }
   return <>
-    <div className="page-intro"><p className="eyebrow">ONE LAST LOOK, AT YOUR PACE</p><h1>Your answers.<br/><span>Ready when you are.</span></h1><p>Read through everything and make any changes before downloading your PDF.</p></div>
+    <div className="page-intro review-intro"><h1>Your answers.<br/><span>Ready when you are.</span></h1><p>Read through everything and make any changes before downloading your PDF.</p></div>
     <div className="review-layout" style={downloadCardHeight
       ? ({ "--review-panel-height": `${downloadCardHeight}px` } as CSSProperties)
       : undefined}>

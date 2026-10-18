@@ -34,6 +34,7 @@ it('removes form line and part prefixes from original review questions',()=>{
 it('requires review and resets that approval after an edit without saving on blur',()=>{
   const fetchMock=vi.fn();vi.stubGlobal('fetch',fetchMock);
   render(<ReviewAnswers session={session} onClear={vi.fn()}/>);
+  expect(screen.queryByText('ONE LAST LOOK, AT YOUR PACE')).toBeNull();
   expect(screen.getByText('Full name')).toBeTruthy();
   expect(screen.getByText('City')).toBeTruthy();
   expect(screen.queryByText('(a) Full name')).toBeNull();
