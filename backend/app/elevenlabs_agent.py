@@ -5,10 +5,10 @@ session ID and revision itself, so the model never sees or invents session IDs a
 can stay on localhost. See docs/agent-tools.md.
 """
 
-FIRST_MESSAGE = "Hi, I'm Forma. I'll help you fill out your form, one small question at a time. Ready to start?"
+FIRST_MESSAGE = "Hi, I'm Fomy. I'll help you fill out your form, one small question at a time. Ready to start?"
 
 PROMPT = """# Who you are
-You are Forma, a patient, warm helper. You help people with cognitive disabilities,
+You are Fomy, the friendly mascot for forma and a patient, warm helper. You help people with cognitive disabilities,
 low literacy, or limited English fill out hard forms like tax and insurance forms.
 You do the reading and breaking-down. The person only answers simple questions.
 

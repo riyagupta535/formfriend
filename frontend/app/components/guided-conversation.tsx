@@ -111,7 +111,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
       setSaid(current => source === "user" ? { ...current, you: text } : { friend: text, you: "" });
     },
     onError: message => setError(typeof message === "string" && /permission|notallowed/i.test(message)
-      ? "Forma needs your microphone to listen. Allow the microphone in your browser (look for the icon next to the web address), then press Start talking again."
+      ? "Fomy needs your microphone to listen. Allow the microphone in your browser (look for the icon next to the web address), then press Start talking again."
       : typeof message === "string" ? message : "The voice guide had a problem. Please try again."),
   });
   const live = conversation.status === "connected";
@@ -222,14 +222,16 @@ function Conversation({ sessionId }: { sessionId: string }) {
       const response = await fetch(`${API}/voice/agent-session`);
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw Error(typeof body.detail === "string" ? body.detail : "The voice guide could not start.");
-      const firstMessage = latest.body.status === "complete"
+      const firstMessage = !resuming
+        ? "Hi, I’m Fomy. I’ll help you fill out your form, one small question at a time. Ready to start?"
+        : latest.body.status === "complete"
         ? "Your answers are ready to review."
         : latest.body.question?.simplified_question || "Let’s continue with the question we were working on.";
       await conversation.startSession({ signedUrl: body.signed_url, connectionType: "websocket", textOnly: false,
-        ...(resuming ? {overrides: {agent: {firstMessage}}} : {}),
+        overrides: {agent: {firstMessage}},
       });
       setHasStarted(true);
-      conversation.sendContextualUpdate("Apply the same relevance, clarity, and specificity checks to spoken AND typed messages. A typed message can also be a clarification request, not an answer. Ask a follow-up when needed; only save clear answers using save_answer, and follow validation errors without advancing.");
+      conversation.sendContextualUpdate("Your name is Fomy, the friendly guide for forma. Apply the same relevance, clarity, and specificity checks to spoken AND typed messages. A typed message can also be a clarification request, not an answer. Ask a follow-up when needed; only save clear answers using save_answer, and follow validation errors without advancing.");
       if (resuming) conversation.sendContextualUpdate(
         "This is a continuation of the same form after a break. Do not repeat your introduction or ask if the person is ready. " +
         "Your opening message already asks the current question. Use get_next_question for saved progress. " +
@@ -239,7 +241,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
       );
       return true;
     } catch (e) {
-      setError(e instanceof TypeError ? "Can’t reach Forma. Make sure the backend is running on port 8000." : (e as Error).message);
+      setError(e instanceof TypeError ? "Can’t reach forma. Make sure the backend is running on port 8000." : (e as Error).message);
       return false;
     } finally { setStarting(false); connecting.current = false; }
   }
@@ -327,10 +329,10 @@ function Conversation({ sessionId }: { sessionId: string }) {
   const isConnecting = starting || conversation.status === "connecting";
   const presence = isConnecting ? ["connecting", "Getting ready…"]
     : !live ? ["idle", hasStarted ? "Paused" : "Ready when you are"]
-    : conversation.isSpeaking ? ["talking", "Forma is talking"]
+    : conversation.isSpeaking ? ["talking", "Fomy is talking"]
     : conversation.isMuted ? ["muted", "Microphone is off"] : ["listening", "Listening to you"];
 
-  return <section className="guide" aria-label="Talk with Forma">
+  return <section className="guide" aria-label="Talk with Fomy">
     <div className="guide-heading">
       <div><p className="eyebrow">A FRIEND BY YOUR SIDE. ONE QUESTION AT A TIME.</p><h1>Let’s talk <span>it through.</span></h1></div>
       {complete && <Link className="button primary" href="/review" onClick={() => conversation.endSession()}>Review my answers <span>↗</span></Link>}
@@ -368,7 +370,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
     <div className="guide-scene">
       <div className="guide-mascot"><Mascot flipped talking={live && conversation.isSpeaking} mouthOpen={mouthOpen} /></div>
       <div className="guide-bubble">
-        {said.friend && <p className="guide-says" aria-live="polite"><span>Forma</span>{said.friend}</p>}
+        {said.friend && <p className="guide-says" aria-live="polite"><span>Fomy</span>{said.friend}</p>}
           {state?.status === "loading" && <div className="chat-message chat-friend-current" role="status" aria-live="polite">
             <div className="chat-message-meta"><span className="chat-speaker">Preparing your next step</span></div>
             <h2>Loading this question…</h2>
@@ -474,7 +476,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
       <button className="text-button" type="button" aria-expanded={transcriptOpen} aria-controls="guide-transcript" onClick={() => setTranscriptOpen(open => !open)}>Conversation so far</button>
       {transcriptOpen && <div id="guide-transcript" className="guide-transcript" ref={transcript} aria-live="polite">
         {lines.map(line => <div key={line.id} className={`chat-message ${line.speaker === "you" ? "chat-user" : "chat-friend-history"}`}>
-          <span className="chat-speaker">{line.speaker === "you" ? "You" : "Forma"}</span><p>{line.text}</p>
+          <span className="chat-speaker">{line.speaker === "you" ? "You" : "Fomy"}</span><p>{line.text}</p>
         </div>)}
       </div>}
     </section>}

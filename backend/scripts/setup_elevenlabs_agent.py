@@ -1,4 +1,4 @@
-"""Create (or update) the FormFriend ElevenLabs agent and its client tools.
+"""Create (or update) the Fomy ElevenLabs agent for forma and its client tools.
 
 Usage, with ELEVENLABS_API_KEY in the repo .env:
     python scripts/setup_elevenlabs_agent.py            # creates a new agent, prints its ID
@@ -57,7 +57,7 @@ def main() -> None:
             print(f'Updated agent {agent_id} with {len(tool_ids)} tools.')
         else:
             created = client.post(f'{API}/agents/create', json={
-                'name': 'FormFriend guide', 'conversation_config': conversation_config,
+                'name': 'Fomy — forma guide', 'conversation_config': conversation_config,
                 'platform_settings': {'overrides': {'conversation_config_override': {'agent': {'first_message': True}}}}
             }).raise_for_status().json()
             print(f"Created agent. Add this to .env:\nELEVENLABS_AGENT_ID={created['agent_id']}")

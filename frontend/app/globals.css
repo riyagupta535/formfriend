@@ -43,20 +43,13 @@ align-items:center;
 gap:9px}
 .brand-period{color:#5cae97;
 margin-left:-8px}
-.brand-icon{width:32px;
-height:35px;
-border-radius:11px 11px 12px 4px;
-background:#347f70;
-color:#fff;
-font-size:30px;
-text-align:center;
-line-height:42px;
-position:relative}
-.brand-icon span{color:#fae5af;
-font-size:16px;
-position:absolute;
-right:4px;
-top:-12px}
+.brand-icon{display:block;
+width:36px;
+height:36px;
+flex-shrink:0;
+overflow:visible}
+.footer-brand{display:inline-flex;align-items:center;gap:7px}
+.footer-brand .brand-icon{width:25px;height:25px}
 nav{display:flex;
 gap:38px;
 align-items:center;

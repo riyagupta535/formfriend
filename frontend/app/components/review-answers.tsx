@@ -49,7 +49,7 @@ export default function ReviewAnswers({ session, onClear }: {session: ReviewSess
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       setDownloaded(true);
     } catch (e) {
-      setError(e instanceof TypeError ? "Cannot reach Forma. Your edits are still here. Check the backend and try again." : (e as Error).message);
+      setError(e instanceof TypeError ? "Cannot reach forma. Your edits are still here. Check the backend and try again." : (e as Error).message);
     } finally { setBusy(false); }
   }
   return <>
