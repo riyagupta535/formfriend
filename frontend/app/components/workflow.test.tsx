@@ -1,15 +1,9 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import Workflow from './workflow';
 
-vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
-class Mic {
-  static current: Mic;
-  onresult: ((e: unknown) => void) | null = null;
-  onerror = null; onend = null;
-  start = vi.fn(); stop = vi.fn(); abort = vi.fn();
-  constructor() { Mic.current = this; }
-}
+const push = vi.hoisted(() => vi.fn());
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push }) }));
 afterEach(() => { cleanup(); sessionStorage.clear(); localStorage.clear(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 it('accepts valid document and screenshot extensions', async () => {
@@ -30,47 +24,20 @@ it('accepts valid document and screenshot extensions', async () => {
   expect(screen.queryByText('Choose a PDF, DOCX, PNG, or JPG file.')).toBeNull();
 });
 
-it('dictates into the real form field, confirms through the API, and discards stale dictation', async () => {
-  sessionStorage.setItem('formfriend-session', 'integration');
-  localStorage.setItem('formfriend-muted', 'true');
-  Object.defineProperty(window, 'SpeechRecognition', { value: Mic, configurable: true });
-  const session = {
-    session_id: 'integration', filename: 'form.pdf', mode: 'mock', document_type: 'pdf', warnings: [],
-    fields: [
-      { field_id: 'name', original_question: 'Full name', simplified_question: 'Your full name?', source_page: 1, answer_type: 'text', user_response: null },
-      { field_id: 'city', original_question: 'City', simplified_question: 'Your city?', source_page: 1, answer_type: 'text', user_response: null },
-    ],
-  };
-  const fetchMock = vi.fn().mockImplementation(async (url: string, options?: RequestInit) => {
-    if (url.endsWith('/sessions/integration') && !options) return { ok: true, json: async () => session };
-    if (url.endsWith('/sessions/integration/fields/name') && options?.method === 'POST') {
-      const body = JSON.parse(options.body as string);
-      return { ok: true, json: async () => ({ ...session, fields: session.fields.map(f => f.field_id === 'name' ? { ...f, user_response: body.value, confirmed: body.confirmed } : f) }) };
-    }
+it('turns an upload into a guided conversation and opens it', async () => {
+  const guidedSession = { session_id: 'guided', filename: 'form.pdf', mode: 'mock', document_type: 'pdf', warnings: [], fields: [] };
+  const fetchMock = vi.fn(async (url: string, options?: RequestInit) => {
+    if (url.endsWith('/sessions') && options?.method === 'POST') return { ok: true, json: async () => ({ session_id: 'upload' }) };
+    if (url.endsWith('/agent/sessions/from-upload')) return { ok: true, json: async () => ({ session_id: 'guided' }) };
+    if (url.endsWith('/sessions/guided')) return { ok: true, json: async () => guidedSession };
     throw Error(`Unexpected request: ${url}`);
   });
   vi.stubGlobal('fetch', fetchMock);
-  render(<Workflow stage="questions" />);
-  await screen.findByRole('heading', { name: 'Your full name?' });
-  await screen.findByText('Unmute voice');
-  fireEvent.click(screen.getByText('Answer with microphone'));
-  const oldMic = Mic.current;
-  act(() => oldMic.onresult?.({ results: [[{ transcript: 'Alex Example' }]] }));
-  expect((screen.getByLabelText('Your answer') as HTMLTextAreaElement).value).toBe('Alex Example');
-  fireEvent.click(screen.getByText(/Send answer/));
-  await screen.findByRole('heading', { name: 'Your city?' });
-  expect(screen.getByText('Alex Example')).toBeTruthy();
-  expect(screen.getByRole('button', { name: 'Edit answer' })).toBeTruthy();
-  await waitFor(() => expect(oldMic.abort).toHaveBeenCalled());
-  const save = fetchMock.mock.calls.find(([url, options]) => url.endsWith('/fields/name') && options?.method === 'POST');
-  expect(JSON.parse(save?.[1].body)).toEqual({ value: 'Alex Example', confirmed: true });
-  act(() => oldMic.onresult?.({ results: [[{ transcript: 'stale name' }]] }));
-  expect((screen.getByLabelText('Your answer') as HTMLTextAreaElement).value).toBe('');
-  fireEvent.change(screen.getByLabelText('Your answer'), { target: { value: 'Unsent city draft' } });
-  fireEvent.click(screen.getByRole('button', { name: 'Edit answer' }));
-  await screen.findByRole('heading', { name: 'Your full name?' });
-  expect((screen.getByLabelText('Your answer') as HTMLTextAreaElement).value).toBe('Alex Example');
-  fireEvent.click(screen.getByRole('button', { name: /Send answer/ }));
-  await screen.findByRole('heading', { name: 'Your city?' });
-  expect((screen.getByLabelText('Your answer') as HTMLTextAreaElement).value).toBe('Unsent city draft');
+  render(<Workflow stage="upload" />);
+  fireEvent.change(document.getElementById('document') as HTMLInputElement,
+    { target: { files: [new File(['pdf'], 'form.pdf', { type: 'application/pdf' })] } });
+  await waitFor(() => expect(push).toHaveBeenCalledWith('/guide'));
+  const bridge = fetchMock.mock.calls.find(([url]) => url.endsWith('/from-upload'))!;
+  expect(JSON.parse(bridge[1]!.body as string)).toEqual({ document_session_id: 'upload' });
+  expect(sessionStorage.getItem('formfriend-session')).toBe('guided');
 });

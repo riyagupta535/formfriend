@@ -1,5 +1,6 @@
 """The Step 5 question contract and typed ElevenLabs tool payloads."""
 import math
+import re
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt, StrictStr, model_validator
 
@@ -14,6 +15,32 @@ class ShowIf(BaseModel):
     value: Scalar
 
 
+class SourceReference(BaseModel):
+    model_config = ConfigDict(extra='ignore')
+    page: int | None = Field(default=None, ge=1)
+    section: str | None = Field(default=None, max_length=300)
+
+
+class Validation(BaseModel):
+    """Optional answer rules from question generation. Unknown keys are kept for the agent to read."""
+    model_config = ConfigDict(extra='allow')
+    min: StrictInt | StrictFloat | None = None
+    max: StrictInt | StrictFloat | None = None
+    min_length: int | None = Field(default=None, ge=0)
+    max_length: int | None = Field(default=None, ge=1)
+    pattern: str | None = Field(default=None, max_length=500)
+    message: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode='after')
+    def validate_rules(self):
+        if self.pattern is not None:
+            try:
+                re.compile(self.pattern)
+            except re.error:
+                raise ValueError('validation.pattern must be a valid regular expression.') from None
+        return self
+
+
 class AgentQuestion(BaseModel):
     model_config = ConfigDict(extra='forbid')
     id: str = Field(min_length=1, max_length=128)
@@ -26,6 +53,11 @@ class AgentQuestion(BaseModel):
     pdf_field_name: str | None = Field(default=None, max_length=500)
     # Choice questions require their allowed values; optional for the supplied boolean schema.
     options: list[str] = Field(default_factory=list, max_length=100)
+    help_text: str = Field(default='', max_length=2000)
+    validation: Validation | str | None = None
+    source_reference: SourceReference | None = None
+    # Hints for the explain tool: terms a person may not know. Empty means the question is plain enough.
+    key_terms: list[str] = Field(default_factory=list, max_length=10)
 
     @model_validator(mode='after')
     def validate_question(self):
@@ -91,6 +123,28 @@ class AgentState(BaseModel):
     questions: list[AgentQuestion]
     revision: int = 0
     raw_responses: dict[str, str] = Field(default_factory=dict)
+    glossary: dict[str, 'GlossaryEntry'] = Field(default_factory=dict)
+
+
+class GlossaryEntry(BaseModel):
+    term: str
+    explanation: str
+    example: str = ''
+    question_id: str
+
+
+class ExplainRequest(BaseModel):
+    """An explanation written by the agent's own model, saved so the person can read it again."""
+    model_config = ConfigDict(extra='forbid')
+    question_id: str = Field(min_length=1, max_length=128)
+    term: str = Field(min_length=1, max_length=200)
+    explanation: str = Field(min_length=1, max_length=1200)
+    example: str = Field(default='', max_length=600)
+
+
+class FromUploadRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    document_session_id: str = Field(min_length=1, max_length=64)
 
 
 class SaveAgentAnswer(BaseModel):
@@ -105,3 +159,6 @@ class SkipAgentQuestion(BaseModel):
     model_config = ConfigDict(extra='forbid')
     question_id: str = Field(min_length=1, max_length=128)
     revision: int | None = Field(default=None, ge=0)
+
+
+AgentState.model_rebuild()

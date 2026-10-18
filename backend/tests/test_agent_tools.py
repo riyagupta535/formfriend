@@ -1,5 +1,6 @@
 import json
 import time
+from pathlib import Path
 import pytest
 import pymupdf
 from fastapi.testclient import TestClient
@@ -125,7 +126,8 @@ def test_context_preserves_original_and_dependency_values(client):
     key=create(client,conditional_questions())
     answer(client,key,'filing_status','married_filing_jointly')
     context=client.get(f'/agent/sessions/{key}/questions/spouse_employment/context').json()
-    assert context['question']=={**conditional_questions()[0],'options':[]}
+    assert context['question']=={**conditional_questions()[0],'options':[],'help_text':'','validation':None,
+                                 'source_reference':None,'key_terms':[]}
     assert context['dependency_answers']=={'filing_status':'married_filing_jointly'}
     assert context['source_page'] is None
     assert client.get(f'/agent/sessions/{key}/questions/missing/context').status_code==404
@@ -195,3 +197,98 @@ def test_unmapped_pdf_question_uses_answer_sheet_instead_of_guessing(client):
         assert 'Synthetic original form' in pdf[0].get_text()
         assert 'Synthetic answer' in pdf[1].get_text()
         assert 'source page not provided' in pdf[1].get_text()
+
+
+def llm_question(**overrides):
+    """The exact shape emitted by question generation."""
+    return {'id':'agi','original_text':'Enter your adjusted gross income (AGI) from line 11.',
+            'simplified_question':'How much was your total income after adjustments?',
+            'help_text':'AGI is on line 11 of last year\'s Form 1040.','input_type':'currency','required':True,
+            'depends_on':[],'show_if':None,'options':[],'validation':{'min':0,'message':'Income cannot be negative.'},
+            'pdf_field_name':None,'source_reference':{'page':1,'section':'Step 2'},'key_terms':['adjusted gross income'],
+            **overrides}
+
+
+def test_accepts_full_llm_schema_and_exposes_hints(client):
+    key=create(client,[llm_question()])
+    question=client.get(f'/agent/sessions/{key}/next-question').json()['question']
+    assert question['help_text'].startswith('AGI')
+    assert question['source_reference']=={'page':1,'section':'Step 2'}
+    assert question['key_terms']==['adjusted gross income']
+
+
+def test_validation_rules_trigger_follow_up(client):
+    key=create(client,[llm_question(),
+                       question('zip',validation={'pattern':r'\d{5}'}),
+                       question('note',validation='Keep it short.')])
+    rejected=answer(client,key,'agi',-5)
+    assert rejected.status_code==422 and rejected.json()['detail']=='Income cannot be negative.'
+    assert answer(client,key,'agi',52000).status_code==200
+    assert answer(client,key,'zip','9002').status_code==422
+    assert answer(client,key,'zip',' 90024 ').status_code==200
+    assert answer(client,key,'note','anything').status_code==200
+
+
+def test_invalid_validation_pattern_rejected(client):
+    response=client.post('/agent/sessions',json={'questions':[question('zip',validation={'pattern':'('})]})
+    assert response.status_code==422
+
+
+def test_explain_term_saves_agent_explanation_to_glossary(client):
+    key=create(client,[llm_question()])
+    before=client.get(f'/agent/sessions/{key}/next-question').json()['revision']
+    body={'question_id':'agi','term':'Adjusted gross income ','explanation':'Your income minus some allowed costs.'}
+    saved=client.post(f'/agent/sessions/{key}/explain',json=body).json()
+    assert saved=={'saved':True,'term':'Adjusted gross income','glossary_size':1}
+    # Re-explaining the same term (any case) replaces it with the newer, simpler wording.
+    client.post(f'/agent/sessions/{key}/explain',json={**body,'term':'adjusted gross income','explanation':'Simpler.','example':'Pay minus costs.'})
+    terms=client.get(f'/agent/sessions/{key}/glossary').json()['terms']
+    assert [(t['term'],t['explanation'],t['example']) for t in terms]==[('adjusted gross income','Simpler.','Pay minus costs.')]
+    assert client.get(f'/agent/sessions/{key}/next-question').json()['revision']==before
+
+
+def test_explain_term_rejects_unknown_question_and_empty_text(client):
+    key=create(client,[llm_question()])
+    assert client.post(f'/agent/sessions/{key}/explain',json={'question_id':'missing','term':'x','explanation':'y'}).status_code==404
+    assert client.post(f'/agent/sessions/{key}/explain',json={'question_id':'agi','term':'x','explanation':''}).status_code==422
+
+
+def test_elevenlabs_client_tools_match_backend_routes():
+    import re
+    from app.elevenlabs_agent import PROMPT, tool_configs
+    configs=[body['tool_config'] for body in tool_configs()]
+    names={c['name'] for c in configs}
+    assert names=={'get_next_question','save_answer','skip_question','get_question_context','explain_term'}
+    operation_ids={op.get('operationId') for path in app.openapi()['paths'].values() for op in path.values()}
+    assert names<=operation_ids
+    for config in configs:
+        assert config['type']=='client' and config['expects_response'] and re.fullmatch(r'[a-zA-Z0-9_-]{1,64}',config['name'])
+        assert config['name'] in PROMPT
+        params=config.get('parameters')
+        if params:
+            assert set(params['required'])<=set(params['properties'])
+            # Session IDs and revisions are bound by the browser, never chosen by the model.
+            assert not {'session_id','revision'}&set(params['properties'])
+
+
+def upload_demo(client):
+    with open(Path(__file__).resolve().parents[2]/'examples'/'demo-form.pdf','rb') as pdf:
+        response=client.post('/sessions',files={'file':('demo-form.pdf',pdf,'application/pdf')})
+    assert response.status_code==200,response.text
+    return response.json()
+
+
+def test_upload_becomes_guided_session_with_pdf_mapping_and_name_rule(client):
+    uploaded=upload_demo(client)
+    created=client.post('/agent/sessions/from-upload',json={'document_session_id':uploaded['session_id']})
+    assert created.status_code==200,created.text
+    key=created.json()['session_id']
+    assert uploaded['session_id'] not in sessions
+    questions=sessions[key][1].agent_state.questions
+    assert len(questions)==len(uploaded['fields'])
+    assert all(q.pdf_field_name for q in questions)
+    name=next(q for q in questions if 'name' in q.original_text.lower())
+    assert answer(client,key,name.id,'1234').status_code==422
+    assert answer(client,key,name.id,'Maria Lopez').status_code==200
+    again=client.post('/agent/sessions/from-upload',json={'document_session_id':key})
+    assert again.status_code==409

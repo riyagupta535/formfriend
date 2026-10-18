@@ -56,6 +56,8 @@ change to the current upload/question UI.
 | `save_answer` | `POST /agent/sessions/{session_id}/answers` | `question_id`, `value`, `raw_response`, optional `revision` |
 | `skip_question` | `POST /agent/sessions/{session_id}/skip` | `question_id`, optional `revision` |
 | `get_question_context` | `GET /agent/sessions/{session_id}/questions/{question_id}/context` | None |
+| `explain_term` | `POST /agent/sessions/{session_id}/explain` | `question_id`, `term`, `explanation`, optional `example` |
+| (UI only) `get_glossary` | `GET /agent/sessions/{session_id}/glossary` | None |
 
 Save example:
 
@@ -134,12 +136,65 @@ computer's localhost; connecting them requires a reachable backend and appropria
 session authentication before shared/production use. Hosting/tunneling and the
 agent's actual tool configuration have not been performed here.
 
-## Suggested agent instructions
+## Full question schema
 
-Ask one supplied question at a time. Explain using original_text and supplied
-context; never invent form instructions or eligibility advice. If the answer is
-vague, off topic, incomplete, or inconsistent, ask one focused follow-up or
-rephrase the question. Do not save until the answer is clear. Do not assume a
-missing dependency is false. After saving, use the returned next state. Offer
-skipping only when optional. Do not ask "is that right?" after every clear answer;
-offer the final review at completion. Never submit an application.
+Questions may include the extra fields emitted by question generation. All are optional:
+
+- `help_text`: shown under "What the form says" and used to ground explanations.
+- `source_reference`: `{"page": 1, "section": "Step 2"}`.
+- `validation`: either a free-text note for the agent, or an object with any of `min`, `max`
+  (number/currency), `min_length`, `max_length`, `pattern` (text, full match), and `message`.
+  Breaking a rule returns 422 with `message` (or a default), so the agent asks a follow-up.
+  Other keys are kept and passed to the agent but not enforced.
+- `key_terms`: words a person may not know (for example `["adjusted gross income"]`). The
+  agent explains these with `explain_term`. Leave it empty for plain questions like name or
+  address, so the agent doesn't over-explain. **Add this to the question-generation prompt.**
+
+## Explaining hard terms
+
+The ElevenLabs agent's own LLM writes explanations. No other model is called. It already has
+`original_text`, `help_text`, and `key_terms` from `get_next_question`, and its prompt tells it to
+explain meaning only, in at most three short sentences, without advice or invented rules.
+
+It then calls `explain_term` with `{question_id, term, explanation, example}`. The browser shows
+the explanation on screen. The backend saves it per session (keyed by term, case-insensitive; a
+newer wording replaces the older one) and the glossary endpoint lists them for the "Words you
+learned" panel. Explaining never changes answers or the revision.
+
+## ElevenLabs agent
+
+The agent definition (prompt, first message, tool schemas) lives in
+`backend/app/elevenlabs_agent.py`. The tools are **client tools**: the browser
+(`frontend/app/components/guided-conversation.tsx`) runs them against these endpoints and
+attaches the session ID and latest revision itself. So:
+
+- the model never sees or invents session IDs,
+- the backend can stay on localhost (no tunnel needed),
+- tool errors (409/422) go back to the agent as `{"error", "status"}` so it can ask again.
+
+`save_answer` takes `value_json` (a JSON-encoded value) because ElevenLabs tool parameters can't
+be a union of types. The browser parses it; unparseable text is sent as a plain string.
+
+Setup:
+
+```sh
+cd backend
+.venv/bin/python scripts/setup_elevenlabs_agent.py   # prints ELEVENLABS_AGENT_ID=...
+```
+
+Put the ID in `.env`. Rerun with `--update` after changing the prompt or tools. The browser gets a
+short-lived signed URL from `GET /voice/agent-session`, so `ELEVENLABS_API_KEY` stays server-side.
+
+Because the browser calls `/agent/*` directly, leave `AGENT_TOOL_SECRET` unset in this mode.
+The secret is for server-side webhook tools; it must never be put in frontend code.
+
+Uploads go straight to `/guide` (the old `/questions` page redirects there). After upload the
+frontend calls `POST /agent/sessions/from-upload` with `{document_session_id}`, which turns the
+parsed fields into agent questions, keeps exact PDF field mappings, adds a "no digits" rule to
+name questions, and replaces the upload session. This is a stopgap: parsed fields have no
+`key_terms` or `required` flags. When LLM question generation lands, POST its questions to
+`/agent/sessions` with `document_session_id` instead.
+
+The agent also judges answers itself before saving ("Check before saving" in the prompt, plus a
+required `sense_check` argument on `save_answer`). Code rules catch typed nonsense like digits in
+a name; spoken nonsense ("one, two, three, four") is caught by the agent.

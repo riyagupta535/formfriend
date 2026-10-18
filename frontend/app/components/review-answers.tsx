@@ -73,7 +73,7 @@ export default function ReviewAnswers({ session, onClear }: {session: ReviewSess
         <button className="button primary" disabled={busy || !reviewed} onClick={() => void download()}>{busy ? "Creating your PDF…" : "Download PDF"}<span aria-hidden="true">↓</span></button>
         {downloaded && <p className="success-message" role="status">✓ Your PDF download has started.</p>}
         {error && <p className="error-message" role="alert">{error}</p>}
-        <Link className="text-button" href="/questions" onClick={event => {if (busy) event.preventDefault();}}>← Back to guided questions</Link>
+        <Link className="text-button" href="/guide" onClick={event => {if (busy) event.preventDefault();}}>← Back to guided questions</Link>
         <button className="text-button" disabled={busy} onClick={onClear}>Clear session & start fresh</button>
       </aside>
     </div>

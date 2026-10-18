@@ -26,3 +26,18 @@ async def speech(body: SpeechRequest):
     except httpx.HTTPError:
         raise HTTPException(502, 'Voice playback is unavailable. Please try again or read the question.') from None
     return Response(result.content, media_type='audio/mpeg', headers={'Cache-Control': 'no-store'})
+
+@router.get('/agent-session')
+async def agent_session():
+    """Signed URL for the private ElevenLabs agent, so the API key never reaches the browser."""
+    key, agent = os.getenv('ELEVENLABS_API_KEY'), os.getenv('ELEVENLABS_AGENT_ID')
+    if not key or not agent:
+        raise HTTPException(503, 'The voice guide is not set up yet. Please try again later.')
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            result = await client.get('https://api.elevenlabs.io/v1/convai/conversation/get-signed-url',
+                                      params={'agent_id': agent}, headers={'xi-api-key': key})
+        result.raise_for_status()
+    except httpx.HTTPError:
+        raise HTTPException(502, 'The voice guide could not start. Please try again.') from None
+    return {'signed_url': result.json()['signed_url']}

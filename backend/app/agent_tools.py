@@ -2,14 +2,19 @@
 import json
 import math
 import os
+import re
 import secrets
 import time
 from datetime import date
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from collections import Counter
 
-from .agent_models import AgentSessionRequest, AgentState, SaveAgentAnswer, SkipAgentQuestion
+from fastapi import APIRouter, Depends, Header, HTTPException
+from pydantic import ValidationError
+
+from .agent_models import (AgentSessionRequest, AgentState, ExplainRequest, FromUploadRequest, GlossaryEntry,
+                           SaveAgentAnswer, SkipAgentQuestion)
 from .models import FormField, Session
 
 
@@ -22,8 +27,35 @@ def authorize(authorization: str | None = Header(default=None)):
 router = APIRouter(prefix='/agent', tags=['agent tools'], dependencies=[Depends(authorize)])
 
 
+def check_rules(question, value):
+    """Apply generated validation rules. Failures are 422s so the agent asks a follow-up."""
+    rules = question.validation
+    if rules is None or isinstance(rules, str):
+        return
+    def fail(default):
+        raise HTTPException(422, rules.message or default)
+    if question.input_type in {'number', 'currency'}:
+        if rules.min is not None and value < rules.min:
+            fail(f'The amount must be at least {rules.min}. Check the number with the person.')
+        if rules.max is not None and value > rules.max:
+            fail(f'The amount must be at most {rules.max}. Check the number with the person.')
+    elif isinstance(value, str):
+        if rules.min_length is not None and len(value) < rules.min_length:
+            fail(f'The answer looks too short (needs at least {rules.min_length} characters). Ask again.')
+        if rules.max_length is not None and len(value) > rules.max_length:
+            fail(f'The answer is too long (at most {rules.max_length} characters). Ask for a shorter answer.')
+        if rules.pattern is not None and not re.fullmatch(rules.pattern, value):
+            fail('The answer is not in the format this form needs. Ask again, explaining the format.')
+
+
 def encoded(question, value):
     """Validate canonical types; uncertainty belongs in conversation, never in saved values."""
+    result = _encoded(question, value)
+    check_rules(question, value.strip() if isinstance(value, str) else value)
+    return result
+
+
+def _encoded(question, value):
     kind = question.input_type
     if kind == 'boolean':
         if type(value) is not bool:
@@ -216,6 +248,54 @@ async def create_agent_session(body: AgentSessionRequest):
     return next_question(session)
 
 
+# A name must contain a letter and no digits; catches typed "1234". Spoken nonsense is the agent's job.
+NAME_RULE = {'pattern': r'(?=.*[^\W\d_])[^\d]+',
+             'message': "That doesn't look like a name. Names don't have numbers. Ask for their name again."}
+
+
+def questions_from_fields(session):
+    """Turn parsed upload fields into agent questions, until LLM question generation replaces this."""
+    name_counts = Counter(name for field in session.fields for name in field.pdf_field_names)
+    questions, used_ids = [], set()
+    for index, field in enumerate(session.fields):
+        key = field.field_id.replace('/', '_')[:120]
+        if key in used_ids:
+            key = f'{key[:110]}-{index}'
+        used_ids.add(key)
+        original = field.original_question.strip() or field.field_id
+        # Mock simplification only adds "Please tell me:"; the agent rephrases questions itself.
+        simplified = original if session.mode == 'mock' else (field.simplified_question.strip() or original)
+        input_type = 'boolean' if field.answer_type == 'checkbox' else field.answer_type
+        unique_name = next((name for name in field.pdf_field_names if name_counts[name] == 1), None)
+        questions.append({
+            'id': key, 'original_text': original[:5000], 'simplified_question': simplified[:1000],
+            'help_text': field.source_context[:2000], 'input_type': input_type, 'required': False,
+            'options': field.options if input_type in {'choice', 'multichoice'} else [],
+            'pdf_field_name': unique_name if session.document_type == 'pdf' else None,
+            'validation': NAME_RULE if input_type == 'text' and re.search(r'\bname\b', original, re.I) else None,
+            'source_reference': {'page': field.source_page if field.source_page >= 1 else None,
+                                 'section': field.section_title},
+        })
+    return questions
+
+
+@router.post('/sessions/from-upload', operation_id='create_agent_session_from_upload')
+async def create_agent_session_from_upload(body: FromUploadRequest):
+    """Start a guided conversation for an uploaded document, replacing its upload session."""
+    from .main import get_session, sessions, documents
+    source = get_session(body.document_session_id)
+    if source.agent_state is not None:
+        raise HTTPException(409, 'This form already has a guided conversation.')
+    try:
+        request = AgentSessionRequest(questions=questions_from_fields(source), document_session_id=source.session_id)
+    except ValidationError:
+        raise HTTPException(422, 'This form could not be turned into guided questions.') from None
+    created = await create_agent_session(request)
+    sessions.pop(source.session_id, None)
+    documents.pop(source.session_id, None)
+    return created
+
+
 @router.get('/sessions/{key}/next-question', operation_id='get_next_question')
 async def get_next_question(key: str):
     return next_question(get_agent_session(key))
@@ -314,3 +394,21 @@ def apply_review(session, answers):
     if any(f.status == 'blocked' for f in session.fields):
         raise HTTPException(422, 'Resolve the unanswered dependency questions before exporting.')
     session.agent_state.revision += 1
+
+
+@router.post('/sessions/{key}/explain', operation_id='explain_term')
+async def explain_term(key: str, body: ExplainRequest):
+    """Show and keep the agent's explanation of a hard term. Does not change answers or the revision."""
+    session = get_agent_session(key)
+    question, _ = find_question(session, body.question_id)
+    entry = GlossaryEntry(term=body.term.strip(), explanation=body.explanation.strip(),
+                          example=body.example.strip(), question_id=question.id)
+    glossary = session.agent_state.glossary
+    glossary[entry.term.lower()] = entry
+    return {'saved': True, 'term': entry.term, 'glossary_size': len(glossary)}
+
+
+@router.get('/sessions/{key}/glossary', operation_id='get_glossary')
+async def get_glossary(key: str):
+    """Words this person has learned so far, for a 'words you learned' panel."""
+    return {'terms': [entry.model_dump() for entry in get_agent_session(key).agent_state.glossary.values()]}
