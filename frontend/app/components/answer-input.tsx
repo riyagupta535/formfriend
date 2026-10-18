@@ -35,5 +35,13 @@ export default function AnswerInput({ field, id, value, onChange, onBlur, disabl
       {(field.options || []).map(option => <option key={option} value={option}>{option}</option>)}
     </select>;
   }
+  if (field.answer_type === "date") {
+    const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+    const displayed = parts ? `${parts[2]}/${parts[3]}/${parts[1]}` : value;
+    return <><input id={id} type="text" value={displayed} disabled={disabled}
+      aria-describedby={`${id}-format`} placeholder="MM/DD/YYYY" maxLength={100}
+      onChange={e => onChange(e.target.value)} onBlur={e => onBlur?.(e.target.value)} />
+      <small id={`${id}-format`}>Month/day/year, for example 01/02/2000. Include the four-digit year.</small></>;
+  }
   return <textarea id={id} rows={3} maxLength={5000} disabled={disabled} value={value} onChange={e => onChange(e.target.value)} onBlur={e => onBlur?.(e.target.value)} placeholder="Type your answer here…"/>;
 }

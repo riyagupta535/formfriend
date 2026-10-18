@@ -3,6 +3,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { ConversationProvider, useConversation, useConversationClientTool } from "@elevenlabs/react";
 import Mascot from "./mascot";
+import DateEntry from "./date-entry";
 import { useAgentSpeechMouth } from "../../lib/useAgentSpeechMouth";
 import GuidedCalculation, { type CalculationSpec, type GuidedQuestion } from "./guided-calculation";
 import { chooseDecisionAnswer, currentDecisionNode, type DecisionStep, type DecisionTree } from "./decision-tree";
@@ -37,6 +38,17 @@ function showAnswer(value: string | null) {
 
 type Line = { id: number; speaker: "friend" | "you"; text: string };
 type HistoryEntry = { question: Question; answer: string };
+
+function isStandaloneDateQuestion(question: Question | null | undefined) {
+  return !!question
+    && question.input_type === "date"
+    && !question.calculation
+    && !question.decision_tree
+    && !question.worksheet
+    && !question.eligibility_workflow
+    && !question.table_lookup
+    && !question.pay_period_calculation;
+}
 
 function typedValue(question: Question, text: string): unknown {
   const value = text.trim();
@@ -175,6 +187,11 @@ function Conversation({ sessionId }: { sessionId: string }) {
   }
   useEffect(() => { toLatest(); measure(); }, [past, historyOpen]);
 
+  useEffect(() => {
+    if (!live || state?.status !== "question" || !isStandaloneDateQuestion(state.question)) return;
+    conversation.sendContextualUpdate("The current question requests a date. Accept spoken dates naturally, including month names and ordinal days such as January second, two thousand. Convert a clearly stated full date to YYYY-MM-DD for save_answer. Numeric entry is month/day/year. Ask for missing month, day, or a four-digit year; do not guess an ambiguous day/month order or silently expand a two-digit year. If save_answer rejects an impossible or out-of-range date, ask for correction and stay on this question. The user can also use the date entry control; treat that date as their answer in this same conversation.");
+  }, [live, state?.status, state?.question]);
+
   // Client tools: the browser binds the session and revision so the model never handles them.
   useConversationClientTool("get_next_question", async () => {
     const result = await tool(`${sessionId}/next-question`);
@@ -291,6 +308,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
         track(result.body.next);
         setTyped("");
         setEditingPrevious(false);
+        setSaid(current => current.rejected ? { friend: "", you: "" } : { ...current, you: "" });
       } else {
         const { error: message, status } = JSON.parse(result.text);
         // A rejected answer is part of the conversation: Forma re-asks in the speech bubble, and the draft stays editable.
@@ -358,6 +376,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
   const guidedDecision = !!question?.decision_tree;
   const specializedWorkflow = !!(question?.worksheet || question?.eligibility_workflow || question?.table_lookup || question?.pay_period_calculation);
   const guidedInteraction = guidedCalculation || guidedDecision || specializedWorkflow;
+  const standaloneDateQuestion = isStandaloneDateQuestion(question);
   const decisionNode = question?.decision_tree ? currentDecisionNode(question.decision_tree, decisionPath) : null;
 
   const complete = state?.status === "complete";
@@ -369,7 +388,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
 
   return <section className="guide" aria-label="Talk with Fomy">
     <div className="guide-heading">
-      <div><p className="eyebrow">A FRIEND BY YOUR SIDE. ONE QUESTION AT A TIME.</p><h1>Let’s talk <span>it through.</span></h1></div>
+      <h1>Let’s talk <span>it through.</span></h1>
       {complete && <Link className="button primary" href="/review" onClick={() => conversation.endSession()}>Review my answers <span>↗</span></Link>}
     </div>
     <div className="guide-progress">
@@ -405,7 +424,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
     <div className="guide-scene">
       <div className="guide-mascot"><Mascot flipped talking={live && conversation.isSpeaking} mouthOpen={mouthOpen} /></div>
       <div className="guide-bubble">
-        {said.friend && <p className={`guide-says${said.rejected ? " is-reask" : ""}`} role={said.rejected ? "alert" : undefined} aria-live={said.rejected ? undefined : "polite"}><span>Fomy</span>{said.friend}</p>}
+        {said.friend && !said.rejected && <p className={`guide-says${said.rejected ? " is-reask" : ""}`} role={said.rejected ? "alert" : undefined} aria-live={said.rejected ? undefined : "polite"}><span>Fomy</span>{said.friend}</p>}
           {state?.status === "loading" && <div className="chat-message chat-friend-current" role="status" aria-live="polite">
             <div className="chat-message-meta"><span className="chat-speaker">Preparing your next step</span></div>
             <h2>Loading this question…</h2>
@@ -414,7 +433,6 @@ function Conversation({ sessionId }: { sessionId: string }) {
           {question && state?.status === "question" && <div className="chat-message chat-friend-current">
             <div className="chat-message-meta"><span className="chat-speaker">Now answering</span>{reference?.section && <span>{reference.section.toUpperCase()}</span>}</div>
             <h2 aria-live="polite">{question.simplified_question}</h2>
-            {question.help_text && <p className="helper-text">{question.help_text}</p>}
             {currentLesson ? <aside className={`guide-lesson${currentLesson.trigger === "asked" ? " is-asked" : ""}`} aria-live="polite">
               <span className="guide-lesson-label">{currentLesson.trigger === "asked" ? "Here’s what that means" : "Good to know"}</span>
               {currentLesson.title && <strong>{currentLesson.title}</strong>}
@@ -422,6 +440,8 @@ function Conversation({ sessionId }: { sessionId: string }) {
               {currentLesson.example && <p><em>For example:</em> {currentLesson.example}</p>}
               {currentLesson.why_it_matters && <p><em>Why it matters:</em> {currentLesson.why_it_matters}</p>}
             </aside> : null}
+            {standaloneDateQuestion && <DateEntry key={`${question.id}-date`} busy={saving || starting || conversation.status === "connecting"}
+              onSubmit={value => void submitAnswer(value)} />}
             {question.subquestions?.length && !guidedCalculation && !guidedDecision ? <div className="subquestion-guide">
               <strong>Let’s break it down:</strong>
               <ul>{question.subquestions.map((item, index) => <li key={`${question.id}-sub-${index}`}>{item.text}</li>)}</ul>
@@ -474,17 +494,23 @@ function Conversation({ sessionId }: { sessionId: string }) {
               <button type="button" className="button secondary" disabled={saving || selectedOptions.length === 0}
                 onClick={() => void submitAnswer(selectedOptions.join(", "))}>Save selected choices</button>
             </div>}
-            <details className="source-details" key={question.id}>
+            <details className="source-details" key={`${question.id}-source`}>
               <summary>ⓘ What the form says</summary>
               {reference?.page && <p><strong>From page {reference.page}</strong></p>}
               <blockquote>{question.original_text}</blockquote>
             </details>
+            {said.rejected && <p className="guide-says is-reask" role="alert"><span>Fomy</span>{said.friend}</p>}
+            {error && <div className="error-message" role="alert">{error}</div>}
+            {!editingPrevious && <div className="question-skip-row">
+              <button type="button" className="text-button" disabled={saving || starting || conversation.status === "connecting"}
+                onClick={() => void skipCurrentQuestion()}>{saving ? "Skipping…" : "Skip for now →"}</button>
+            </div>}
           </div>}
           {state?.status === "complete" && <div className="chat-message chat-friend-current"><h2>You’re all done. Great work!</h2><p>Look over your answers before you download your form.</p></div>}
 
         {said.you && <p className="guide-heard"><span>You said</span>“{said.you}”</p>}
       <form className="guide-composer" onSubmit={send}>
-        {!guidedInteraction && (live || state?.status === "question") && <>
+        {!guidedInteraction && !standaloneDateQuestion && (live || state?.status === "question") && <>
           <label htmlFor="typed-answer">Type your answer or ask a question</label>
           <div className="guide-typed">
             <input id="typed-answer" aria-label={live ? "Type your answer or ask a question" : "Type your answer"} value={typed} onChange={event => {
@@ -530,7 +556,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
         {item.why_it_matters && <p className="guide-example">Why it matters: {item.why_it_matters}</p>}
       </details>)}
     </div>}
-    {error && <div className="error-message" role="alert">{error}</div>}
+    {error && (!question || state?.status !== "question") && <div className="error-message" role="alert">{error}</div>}
   </section>;
 }
 

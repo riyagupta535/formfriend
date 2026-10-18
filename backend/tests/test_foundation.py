@@ -563,7 +563,7 @@ def test_llm_child_credit_calculation_is_validated_and_applied():
     assert [item.answer_type for item in field.subquestions] == ["choice", "number"]
     assert "$400,000" in field.subquestions[0].text
 
-def test_llm_rejects_yes_no_guidance_for_a_direct_currency_field():
+def test_llm_repairs_yes_no_guidance_for_a_direct_currency_field():
     from app.conversation import _validate_batch
     from app.models import SimplificationBatch
     field = FormField(
@@ -588,10 +588,32 @@ def test_llm_rejects_yes_no_guidance_for_a_direct_currency_field():
         "confidence": "high",
     }]})
 
-    with pytest.raises(ValueError, match="cannot contain subquestions"):
-        _validate_batch(response, [field])
+    _validate_batch(response, [field])
+    assert response.results[0].plain_question == "What is the total amount of this other income?"
+    assert response.results[0].subquestions == []
 
-    response.results[0].subquestions = []
+
+def test_llm_rejects_unrepairable_yes_no_guidance_for_a_direct_currency_field():
+    from app.conversation import _validate_batch
+    from app.models import SimplificationBatch
+    field = FormField(
+        field_id="other-income",
+        original_question="Other income not from jobs. Enter the total amount.",
+        answer_type="currency",
+        source_page=1,
+        source_rect=[],
+    )
+    response = SimplificationBatch.model_validate({"results": [{
+        "field_id": "other-income",
+        "plain_question": "Do you expect to have other income this year?",
+        "helper_text": None,
+        "validation": validation("decimal_number"),
+        "subquestions": [],
+        "calculation": None,
+        "decision_tree": None,
+        "confidence": "high",
+    }]})
+
     with pytest.raises(ValueError, match="cannot use a yes/no"):
         _validate_batch(response, [field])
 

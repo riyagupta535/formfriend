@@ -16,10 +16,11 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import ValidationError
 
 from .agent_models import (AgentSessionRequest, AgentState, ExplainRequest, FromUploadRequest, GlossaryEntry, TeachRequest,
-                           SaveAgentAnswer, SkipAgentQuestion)
+                           SaveAgentAnswer, SkipAgentQuestion, Validation)
 from .answer_judge import judge_answer, should_judge
 from .teaching import lesson_for
 from .models import FormField, Session
+from .dates import normalize_date
 from .text_utils import strip_form_reference
 
 
@@ -163,7 +164,7 @@ def _valid_ssn(value: str) -> bool:
 def encoded(question, value):
     """Validate canonical types; uncertainty belongs in conversation, never in saved values."""
     result = _encoded(question, value)
-    check_rules(question, value.strip() if isinstance(value, str) else value)
+    check_rules(question, result if question.input_type == 'date' else value.strip() if isinstance(value, str) else value)
     return result
 
 
@@ -192,10 +193,9 @@ def _encoded(question, value):
         raise HTTPException(422, 'Choose an exact available option. Ask a follow-up if the choice is unclear.')
     if kind == 'date':
         try:
-            if date.fromisoformat(value).isoformat() != value:
-                raise ValueError()
-        except ValueError:
-            raise HTTPException(422, 'A full date in YYYY-MM-DD format is required. Ask for missing date parts.') from None
+            value = normalize_date(value)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from None
     return value
 
 
@@ -276,6 +276,9 @@ def sync_source_simplifications(session):
             question.simplified_question = simplified
             question.help_text = source_field.helper_text or source_field.source_context[:2000]
             question.validation = source_field.validation.model_copy(deep=True)
+            if question.validation.kind == 'none':
+                question.validation.kind = infer_validation_kind(
+                    f'{question.original_text} {question.simplified_question}', question.input_type)
             target.simplified_question = simplified
             target.helper_text = source_field.helper_text
             target.subquestions = [item.model_copy(deep=True) for item in source_field.subquestions]
@@ -287,7 +290,7 @@ def sync_source_simplifications(session):
                                              if source_field.pay_period_calculation else None)
             target.eligibility_workflow = (source_field.eligibility_workflow.model_copy(deep=True)
                                            if source_field.eligibility_workflow else None)
-            target.validation = source_field.validation.model_copy(deep=True)
+            target.validation = question.validation.model_copy(deep=True)
             target.simplification_status = 'complete'
             target.simplification_confidence = source_field.simplification_confidence
         elif source_field.simplification_status == 'failed':
@@ -312,6 +315,18 @@ def next_question(session):
     question_payload = question.model_dump() if question else None
     if question is not None:
         field = fields[question.id]
+        numeric_workflow = (
+            (field.calculation and field.calculation.source_field_ids)
+            or field.worksheet or field.table_lookup or field.pay_period_calculation
+        )
+        if numeric_workflow and question.input_type not in {'number', 'currency'}:
+            # Guided calculations always produce a number. Repair old sessions
+            # and noisy extraction results before choosing an input or validating.
+            question.input_type = 'currency'
+            question.validation = Validation(kind='decimal_number', min=0)
+            field.answer_type = 'currency'
+            field.validation = question.validation.model_copy(deep=True)
+            question_payload = question.model_dump()
         subquestions = [item.model_dump() for item in field.subquestions]
         simplified_question = question.simplified_question
         help_text = question.help_text
@@ -605,8 +620,6 @@ async def skip_question(key: str, body: SkipAgentQuestion):
     session = get_agent_session(key)
     check_revision(session, body.revision)
     question, field = find_question(session, body.question_id)
-    if question.required:
-        raise HTTPException(422, 'This question is required. Offer an explanation or a follow-up instead of skipping.')
     if field.status in {'blocked', 'not_applicable'}:
         raise HTTPException(409, 'This question is not currently applicable.')
     invalidated = invalidate_dependents(session, question.id)

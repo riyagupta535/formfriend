@@ -19,6 +19,7 @@ from .models import (
     WorksheetInput,
     WorksheetSpec,
 )
+from .agent_models import Validation
 
 
 @dataclass
@@ -183,6 +184,10 @@ def _attach_table_lookup_workflows(
         if field.source_page == sum_field.source_page
     ] if sum_field else []
     if sum_field is not None and len(three_job_lookups) >= 3:
+        # This field stores the sum below, regardless of any noisy nearby text
+        # that may have caused the generic extractor to classify it as a date.
+        sum_field.answer_type = "currency"
+        sum_field.validation = Validation(kind="decimal_number", min=0)
         # The first lookup is the separate two-job path. The next two are the
         # amounts the three-job total explicitly tells the user to add.
         sources = three_job_lookups[-2:]

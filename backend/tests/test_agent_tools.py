@@ -91,14 +91,18 @@ def test_changed_parent_invalidates_dependent_and_does_not_restore_old_answer(cl
     assert sessions[key][1].fields[0].user_response is None
 
 
-def test_skip_optional_and_reject_required_and_stale_updates(client):
+def test_skip_required_and_optional_questions_and_reject_stale_updates(client):
     key=create(client,[question('name',required=True),question('nickname')])
-    assert client.post(f'/agent/sessions/{key}/skip',json={'question_id':'name'}).status_code==422
-    assert answer(client,key,'name','Alex',revision=0).status_code==200
-    assert answer(client,key,'name','Sam',revision=0).status_code==409
+    required=client.post(f'/agent/sessions/{key}/skip',json={'question_id':'name','revision':0})
+    assert required.status_code==200
+    assert required.json()['next']['question']['id']=='nickname'
     skipped=client.post(f'/agent/sessions/{key}/skip',json={'question_id':'nickname','revision':1})
     assert skipped.status_code==200
     assert skipped.json()['next']['status']=='complete'
+
+    stale_key=create(client,[question('name',required=True),question('nickname')])
+    assert answer(client,stale_key,'name','Alex',revision=0).status_code==200
+    assert answer(client,stale_key,'name','Sam',revision=0).status_code==409
 
 
 def test_skipped_dependency_blocks_child_instead_of_guessing(client):
@@ -117,6 +121,13 @@ def test_typed_values_are_not_guessed(client,kind,bad,good):
     assert answer(client,key,'value',bad).status_code==422
     assert client.get(f'/agent/sessions/{key}/next-question').json()['revision']==0
     assert answer(client,key,'value',good).status_code==200
+
+
+def test_invalid_date_message_is_user_facing(client):
+    key=create(client,[question('start_date',input_type='date')])
+    result=answer(client,key,'start_date','March fifth')
+    assert result.status_code==422
+    assert result.json()['detail']=='Enter a complete date as MM/DD/YYYY (month/day/year), YYYY-MM-DD, or Month Day, Year. Include the four-digit year.'
 
 
 @pytest.mark.parametrize('questions',[
@@ -407,6 +418,30 @@ def test_old_numeric_result_uses_its_numeric_subquestion_as_the_prompt():
     assert result['question']['subquestions'] == []
 
 
+def test_guided_calculation_repairs_a_misclassified_date_field():
+    from app.agent_tools import next_question
+    field = FormField(
+        field_id='wage-total', original_question='Add the amounts from the two earlier lines',
+        simplified_question='Let’s add the two wage-table amounts.', answer_type='date',
+        calculation=CalculationSpec(operation='add', source_field_ids=['first', 'second']),
+        source_page=3, source_rect=[],
+    )
+    question = AgentQuestion(
+        id='wage-total', original_text=field.original_question,
+        simplified_question=field.simplified_question, input_type='date',
+    )
+    session = Session(
+        session_id='guided-wage-total', filename='w4.pdf', mode='gemini', fields=[field],
+        agent_state=AgentState(questions=[question]),
+    )
+
+    result = next_question(session)
+
+    assert result['question']['input_type'] == 'currency'
+    assert result['question']['validation']['kind'] == 'decimal_number'
+    assert field.answer_type == 'currency'
+
+
 def test_next_question_includes_specialized_workflow_metadata():
     from app.agent_tools import next_question
     field = FormField(
@@ -566,3 +601,41 @@ def test_teach_without_provider_falls_back_to_form_text_when_asked(client, monke
     asked=client.post(f'/agent/sessions/{key}/teach',json={'question_id':'ex','user_question':'what is this'}).json()
     assert asked['needed'] and 'owed no tax' in asked['explanation']
     assert client.post(f'/agent/sessions/{key}/teach',json={'question_id':'plain','user_question':'huh'}).status_code==502
+
+def test_date_entry_is_normalized_before_saving_and_bad_dates_leave_progress_unchanged(client):
+    key=create(client,[question('date',input_type='date')])
+    invalid=answer(client,key,'date','2/30/2000')
+    assert invalid.status_code==422
+    assert client.get(f'/agent/sessions/{key}/next-question').json()['revision']==0
+    saved=answer(client,key,'date','1/2/2000')
+    assert saved.status_code==200
+    assert saved.json()['value']=='2000-01-02'
+    assert client.get(f'/sessions/{key}').json()['fields'][0]['user_response']=='2000-01-02'
+
+
+def test_background_simplification_keeps_inferred_address_validation(client):
+    field = FormField(
+        field_id='street', original_question='Street address',
+        simplified_question='Street address', source_page=1, source_rect=[],
+        simplification_status='pending',
+    )
+    source = Session(
+        session_id='pending-address', filename='form.pdf', mode='gemini',
+        simplification_status='running', fields=[field],
+    )
+    sessions[source.session_id] = (time.monotonic(), source)
+    documents[source.session_id] = b'%PDF-synthetic'
+    created = client.post('/agent/sessions/from-upload', json={'document_session_id': source.session_id})
+    assert created.status_code == 200
+    key = created.json()['session_id']
+
+    field.simplified_question = 'What is your street address?'
+    field.validation = Validation(kind='none')
+    field.simplification_status = 'complete'
+    source.simplification_status = 'complete'
+
+    ready = client.get(f'/agent/sessions/{key}/next-question')
+    assert ready.json()['question']['validation']['kind'] == 'street_address'
+    assert answer(client, key, 'street', 'Main Street', revision=0).status_code == 422
+    assert client.get(f'/agent/sessions/{key}/next-question').json()['revision'] == 0
+    assert answer(client, key, 'street', '123 Main Street', revision=0).status_code == 200
