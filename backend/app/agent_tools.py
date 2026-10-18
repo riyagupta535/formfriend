@@ -65,7 +65,10 @@ def check_rules(question, value):
         if kind == 'person_name' and (not re.search(r'[^\W\d_]', value) or re.search(r'\d', value)):
             fail("Enter a name using letters rather than numbers or unrelated text.")
         if kind == 'social_security_number' and not _valid_ssn(value):
-            fail('Enter a 9-digit Social Security number in the format XXX-XX-XXXX.')
+            raise HTTPException(
+                422,
+                'Enter a valid 9-digit Social Security number in the format XXX-XX-XXXX.',
+            )
         if kind == 'employer_identification_number' and not re.fullmatch(r'\d{2}-?\d{7}', value):
             fail('Enter a 9-digit employer identification number in the format XX-XXXXXXX.')
         if kind == 'taxpayer_identification_number' and not (

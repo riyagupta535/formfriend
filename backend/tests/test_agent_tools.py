@@ -275,6 +275,20 @@ def test_closed_validation_kinds_reject_bad_text_without_advancing(client,kind,b
     assert answer(client,key,'value',good,revision=0).status_code==200
 
 
+def test_ssn_validation_explains_that_a_formatted_but_reserved_number_is_invalid(client):
+    key=create(client,[question('ssn',validation={
+        'kind':'social_security_number',
+        'message':'Please enter your 9-digit Social Security number, formatted as XXX-XX-XXXX.',
+    })])
+
+    rejected=answer(client,key,'ssn','999-99-9999',revision=0)
+
+    assert rejected.status_code==422
+    assert rejected.json()['detail']==(
+        'Enter a valid 9-digit Social Security number in the format XXX-XX-XXXX.'
+    )
+
+
 def test_explain_term_saves_agent_explanation_to_glossary(client):
     key=create(client,[llm_question()])
     before=client.get(f'/agent/sessions/{key}/next-question').json()['revision']

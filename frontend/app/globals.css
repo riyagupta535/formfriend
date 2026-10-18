@@ -1092,9 +1092,6 @@ background:white}
 .upload-a-box h2 { font-size: 22px; margin: 0 0 18px; letter-spacing: -.01em; }
 .upload-a-button { min-width: 220px; font-size: 17px; }
 .upload-a-hint { font-size: 15px; color: var(--muted); margin: 18px auto 0; max-width: 380px; line-height: 1.6; }
-.upload-a-sample { margin-top: 22px; font-size: 16px; color: var(--muted); padding: 8px 12px; border-radius: 10px; }
-.upload-a-sample span { color: var(--teal); font-weight: 600; text-decoration: underline; text-underline-offset: 4px; }
-.upload-a-sample:hover:not(:disabled) { background: #eef4ee; }
 .upload-a-resume { display: block; margin-top: 10px; font-size: 16px; font-weight: 600; color: var(--teal); }
 .upload-a-points { list-style: none; padding: 0; margin: 34px 0 0; display: flex; justify-content: center; gap: 28px; flex-wrap: wrap; font-size: 15px; color: var(--muted); }
 .upload-a-points li { display: inline-flex; align-items: center; gap: 8px; }
