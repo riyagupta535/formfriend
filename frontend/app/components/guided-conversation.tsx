@@ -3,6 +3,8 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { ConversationProvider, useConversation, useConversationClientTool } from "@elevenlabs/react";
 import Mascot from "./mascot";
+import DateEntry from "./date-entry";
+import { useAgentSpeechMouth } from "../../lib/useAgentSpeechMouth";
 import GuidedCalculation, { type CalculationSpec, type GuidedQuestion } from "./guided-calculation";
 import { chooseDecisionAnswer, currentDecisionNode, type DecisionStep, type DecisionTree } from "./decision-tree";
 import WorksheetWorkflow, { type WorksheetSpec } from "./worksheet-workflow";
@@ -114,6 +116,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
       : typeof message === "string" ? message : "The voice guide had a problem. Please try again."),
   });
   const live = conversation.status === "connected";
+  const mouthOpen = useAgentSpeechMouth(live && conversation.isSpeaking, conversation.getOutputVolume);
 
   function track(next: NextState) { revision.current = next.revision; latestState.current = next; setState(next); void loadPast(); }
 
@@ -170,6 +173,11 @@ function Conversation({ sessionId }: { sessionId: string }) {
     historyList.current?.scrollTo?.({ top: historyList.current.scrollHeight, behavior: smooth ? "smooth" : "auto" });
   }
   useEffect(() => { toLatest(); measure(); }, [past, historyOpen]);
+
+  useEffect(() => {
+    if (!live || state?.status !== "question" || state.question?.input_type !== "date") return;
+    conversation.sendContextualUpdate("The current question requests a date. Accept spoken dates naturally, including month names and ordinal days such as January second, two thousand. Convert a clearly stated full date to YYYY-MM-DD for save_answer. Numeric entry is month/day/year. Ask for missing month, day, or a four-digit year; do not guess an ambiguous day/month order or silently expand a two-digit year. If save_answer rejects an impossible or out-of-range date, ask for correction and stay on this question. The user can also use the date entry control; treat that date as their answer in this same conversation.");
+  }, [live, state?.status, state?.question?.id, state?.question?.input_type]);
 
   // Client tools: the browser binds the session and revision so the model never handles them.
   useConversationClientTool("get_next_question", async () => {
@@ -364,7 +372,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
     </section>}
 
     <div className="guide-scene">
-      <div className="guide-mascot"><Mascot talking={live && conversation.isSpeaking} /></div>
+      <div className="guide-mascot"><Mascot flipped talking={live && conversation.isSpeaking} mouthOpen={mouthOpen} /></div>
       <div className="guide-bubble">
         {said.friend && <p className="guide-says" aria-live="polite"><span>Forma</span>{said.friend}</p>}
           {state?.status === "loading" && <div className="chat-message chat-friend-current" role="status" aria-live="polite">
@@ -375,6 +383,8 @@ function Conversation({ sessionId }: { sessionId: string }) {
           {question && state?.status === "question" && <div className="chat-message chat-friend-current">
             <div className="chat-message-meta"><span className="chat-speaker">Now answering</span>{reference?.section && <span>{reference.section.toUpperCase()}</span>}</div>
             <h2 aria-live="polite">{question.simplified_question}</h2>
+            {question.input_type === "date" && <DateEntry key={question.id} busy={saving || starting || conversation.status === "connecting"}
+              onSubmit={value => void submitAnswer(value)} />}
             {question.subquestions?.length && !guidedCalculation && !guidedDecision ? <div className="subquestion-guide">
               <strong>Let’s break it down:</strong>
               <ul>{question.subquestions.map((item, index) => <li key={`${question.id}-sub-${index}`}>{item.text}</li>)}</ul>
@@ -440,8 +450,9 @@ function Conversation({ sessionId }: { sessionId: string }) {
       <form className="guide-composer" onSubmit={send}>
         {!guidedInteraction && (live || state?.status === "question") && <>
           <label htmlFor="typed-answer">Type your answer or ask a question</label>
+          {question?.input_type === "date" && <p id="date-format-help" className="chat-composer-note">Use month/day/year (MM/DD/YYYY), for example 01/02/2000, or write January 2, 2000. Include the full year.</p>}
           <div className="guide-typed">
-            <input id="typed-answer" aria-label={live ? "Type your answer or ask a question" : "Type your answer"} value={typed} onChange={event => {
+            <input id="typed-answer" aria-describedby={question?.input_type === "date" ? "date-format-help" : undefined} aria-label={live ? "Type your answer or ask a question" : "Type your answer"} value={typed} onChange={event => {
               setTyped(event.target.value);
               if (live) conversation.sendUserActivity();
             }} placeholder={live ? "Speak or type here—same conversation" : "Type your answer here"} autoComplete="off"

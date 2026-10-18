@@ -123,7 +123,7 @@ def test_invalid_date_message_is_user_facing(client):
     key=create(client,[question('start_date',input_type='date')])
     result=answer(client,key,'start_date','March fifth')
     assert result.status_code==422
-    assert result.json()['detail']=='A full date in YYYY-MM-DD format is required.'
+    assert result.json()['detail']=='Enter a complete date as MM/DD/YYYY (month/day/year), YYYY-MM-DD, or Month Day, Year. Include the four-digit year.'
 
 
 @pytest.mark.parametrize('questions',[
@@ -442,3 +442,14 @@ def test_next_question_includes_specialized_workflow_metadata():
     result = next_question(session)
 
     assert result['question']['worksheet']['worksheet_id'] == 'deductions'
+
+
+def test_date_entry_is_normalized_before_saving_and_bad_dates_leave_progress_unchanged(client):
+    key=create(client,[question('date',input_type='date')])
+    invalid=answer(client,key,'date','2/30/2000')
+    assert invalid.status_code==422
+    assert client.get(f'/agent/sessions/{key}/next-question').json()['revision']==0
+    saved=answer(client,key,'date','1/2/2000')
+    assert saved.status_code==200
+    assert saved.json()['value']=='2000-01-02'
+    assert client.get(f'/sessions/{key}').json()['fields'][0]['user_response']=='2000-01-02'
