@@ -12,11 +12,33 @@ type Question = {
   source_reference?: { page?: number | null; section?: string | null } | null;
 };
 type NextState = {
-  session_id: string; revision: number; status: "question" | "complete" | "blocked";
+  session_id: string; revision: number; status: "loading" | "question" | "complete" | "blocked";
   question: Question | null; progress: Record<string, number>;
 };
 type Learned = { term: string; explanation: string; example: string };
 type Line = { id: number; speaker: "friend" | "you"; text: string };
+type HistoryEntry = { question: Question; answer: string };
+
+function typedValue(question: Question, text: string): unknown {
+  const value = text.trim();
+  const normalized = value.toLowerCase();
+  if (question.input_type === "boolean") {
+    if (["yes", "y", "true"].includes(normalized)) return true;
+    if (["no", "n", "false"].includes(normalized)) return false;
+  }
+  if (question.input_type === "number" || question.input_type === "currency") {
+    const number = Number(value.replace(/[$,\s]/g, ""));
+    if (Number.isFinite(number)) return number;
+  }
+  if (question.input_type === "choice") {
+    return question.options.find(option => option.toLowerCase() === normalized) ?? value;
+  }
+  if (question.input_type === "multichoice") {
+    const requested = value.split(",").map(option => option.trim()).filter(Boolean);
+    return requested.map(item => question.options.find(option => option.toLowerCase() === item.toLowerCase()) ?? item);
+  }
+  return value;
+}
 
 /** Calls an /agent endpoint and turns errors into text the agent can act on, instead of throwing. */
 async function tool(path: string, init?: RequestInit) {
@@ -38,9 +60,14 @@ function Conversation({ sessionId }: { sessionId: string }) {
   const [typed, setTyped] = useState("");
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(false);
+  const [saving, setSaving] = useState(false);
   const connecting = useRef(false);
   const [hasStarted, setHasStarted] = useState(false);
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [editingPrevious, setEditingPrevious] = useState(false);
+  const [selectedOptions, setSelectedOptions] = useState<string[]>([]);
   const revision = useRef<number | undefined>(undefined);
+  const latestState = useRef<NextState | null>(null);
   const lineId = useRef(0);
   const transcript = useRef<HTMLDivElement>(null);
 
@@ -54,7 +81,24 @@ function Conversation({ sessionId }: { sessionId: string }) {
   });
   const live = conversation.status === "connected";
 
-  function track(next: NextState) { revision.current = next.revision; setState(next); }
+  function track(next: NextState) { revision.current = next.revision; latestState.current = next; setState(next); }
+
+  function remember(question: Question | null | undefined, answer: string) {
+    if (!question || editingPrevious) return;
+    setHistory(current => [...current, { question, answer }]);
+  }
+
+  function goBack() {
+    const previous = history.at(-1);
+    const current = latestState.current;
+    if (!previous || !current) return;
+    if (live) conversation.endSession();
+    setHistory(items => items.slice(0, -1));
+    setState({ ...current, status: "question", question: previous.question });
+    setTyped(previous.answer);
+    setEditingPrevious(true);
+    setError("");
+  }
 
   // Load the first question so it is visible before the conversation starts, and for the glossary.
   useEffect(() => {
@@ -62,6 +106,14 @@ function Conversation({ sessionId }: { sessionId: string }) {
     tool(`${sessionId}/glossary`).then(result => { if (result.ok) setLearned(result.body.terms); });
   }, [sessionId]);
   useEffect(() => { transcript.current?.scrollTo?.({ top: transcript.current.scrollHeight }); }, [lines]);
+  useEffect(() => { setSelectedOptions([]); }, [state?.question?.id]);
+  useEffect(() => {
+    if (state?.status !== "loading") return;
+    const timer = window.setTimeout(() => {
+      void tool(`${sessionId}/next-question`).then(result => result.ok ? track(result.body) : setError(JSON.parse(result.text).error));
+    }, 750);
+    return () => window.clearTimeout(timer);
+  }, [sessionId, state]);
 
   // Client tools: the browser binds the session and revision so the model never handles them.
   useConversationClientTool("get_next_question", async () => {
@@ -75,12 +127,18 @@ function Conversation({ sessionId }: { sessionId: string }) {
     try { value = JSON.parse(raw); } catch { value = raw; } // Unquoted free text is still text.
     const result = await tool(`${sessionId}/answers`, post({
       question_id: params.question_id, value, raw_response: String(params.raw_response ?? ""), revision: revision.current }));
-    if (result.ok) track(result.body.next);
+    if (result.ok) {
+      remember(state?.question, String(params.raw_response ?? params.value_json ?? ""));
+      track(result.body.next);
+    }
     return result.text;
   });
   useConversationClientTool("skip_question", async (params: Record<string, unknown>) => {
     const result = await tool(`${sessionId}/skip`, post({ question_id: params.question_id, revision: revision.current }));
-    if (result.ok) track(result.body.next);
+    if (result.ok) {
+      remember(state?.question, "");
+      track(result.body.next);
+    }
     return result.text;
   });
   useConversationClientTool("get_question_context", async (params: Record<string, unknown>) =>
@@ -128,20 +186,44 @@ function Conversation({ sessionId }: { sessionId: string }) {
     } finally { setStarting(false); connecting.current = false; }
   }
 
-  async function send(event: React.FormEvent) {
-    event.preventDefault();
-    const text = typed.trim();
-    if (!text || connecting.current || starting || conversation.status === "connecting") return;
+  async function submitAnswer(answer: string) {
+    const text = answer.trim();
+    if (!text || !question || state?.status !== "question" || connecting.current || starting || conversation.status === "connecting") return;
     setError("");
-    // Both inputs share one voice-enabled session and its answer-validation tools.
-    if (!live && !await start()) return;
+    if (live && !editingPrevious) {
+      try {
+        conversation.sendUserMessage(text);
+        setLines(current => [...current, {id: ++lineId.current, speaker: "you", text}]);
+        setTyped("");
+      } catch {
+        setError("Your message could not be sent. Your draft is still here; please try again.");
+      }
+      return;
+    }
+    setSaving(true);
     try {
-      conversation.sendUserMessage(text);
-      setLines(current => [...current, {id: ++lineId.current, speaker: "you", text}]);
-      setTyped("");
+      const result = await tool(`${sessionId}/answers`, post({
+        question_id: question.id,
+        value: typedValue(question, text),
+        raw_response: text,
+        revision: revision.current,
+      }));
+      if (result.ok) {
+        remember(question, text);
+        track(result.body.next);
+        setTyped("");
+        setEditingPrevious(false);
+      } else {
+        setError(JSON.parse(result.text).error);
+      }
     } catch {
       setError("Your message could not be sent. Your draft is still here; please try again.");
-    }
+    } finally { setSaving(false); }
+  }
+
+  function send(event: React.FormEvent) {
+    event.preventDefault();
+    void submitAnswer(typed);
   }
 
   const progress = state?.progress ?? {};
@@ -149,6 +231,8 @@ function Conversation({ sessionId }: { sessionId: string }) {
   const total = done + (progress.unanswered ?? 0) + (progress.blocked ?? 0);
   const question = state?.question;
   const reference = question?.source_reference;
+  const options = question?.input_type === "boolean" && question.options.length === 0
+    ? ["Yes", "No"] : question?.options ?? [];
 
   return <section className="chat-workspace guide" aria-label="Talk with Form Friend">
     <div className="chat-heading">
@@ -160,10 +244,28 @@ function Conversation({ sessionId }: { sessionId: string }) {
       <progress value={done} max={Math.max(total, 1)} aria-label="Questions done" />
       <div className="guide-body">
         <div className="guide-main">
+          {state?.status === "loading" && <div className="chat-message chat-friend-current" role="status" aria-live="polite">
+            <div className="chat-message-meta"><span className="chat-speaker">Preparing your next step</span></div>
+            <h2>Loading this question…</h2>
+            <p>Gemini is turning the form wording into a simpler question.</p>
+          </div>}
           {question && state?.status === "question" && <div className="chat-message chat-friend-current">
             <div className="chat-message-meta"><span className="chat-speaker">Now answering</span>{reference?.section && <span>{reference.section.toUpperCase()}</span>}</div>
             <h2 aria-live="polite">{question.simplified_question}</h2>
-            {question.options.length > 0 && <ul className="guide-options">{question.options.map(option => <li key={option}>{option}</li>)}</ul>}
+            {(question.input_type === "choice" || question.input_type === "boolean") && options.length > 0 && <div className="decision-options" role="group" aria-label="Answer choices">
+              {options.map(option => <button key={option} type="button" className="decision-option" disabled={saving} onClick={() => void submitAnswer(option)}>
+                {option}<span aria-hidden="true">→</span>
+              </button>)}
+            </div>}
+            {question.input_type === "multichoice" && options.length > 0 && <div className="decision-options" role="group" aria-label="Select all that apply">
+              {options.map(option => <button key={option} type="button" aria-pressed={selectedOptions.includes(option)}
+                className={`decision-option ${selectedOptions.includes(option) ? "selected" : ""}`} disabled={saving}
+                onClick={() => setSelectedOptions(current => current.includes(option) ? current.filter(item => item !== option) : [...current, option])}>
+                {option}<span aria-hidden="true">{selectedOptions.includes(option) ? "✓" : "+"}</span>
+              </button>)}
+              <button type="button" className="button secondary" disabled={saving || selectedOptions.length === 0}
+                onClick={() => void submitAnswer(selectedOptions.join(", "))}>Save selected choices</button>
+            </div>}
             <details className="source-details" key={question.id}>
               <summary>ⓘ What the form says</summary>
               {reference?.page && <p><strong>From page {reference.page}</strong></p>}
@@ -192,7 +294,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
         {(live || state?.status === "question") && <>
           <label htmlFor="typed-answer">Type your answer or ask a question</label>
           <div className="guide-typed">
-            <input id="typed-answer" value={typed} onChange={event => {
+            <input id="typed-answer" aria-label={live ? "Type your answer or ask a question" : "Type your answer"} value={typed} onChange={event => {
               setTyped(event.target.value);
               if (live) conversation.sendUserActivity();
             }} placeholder={live ? "Speak or type here—same conversation" : "Type your answer here"} autoComplete="off"
@@ -201,16 +303,19 @@ function Conversation({ sessionId }: { sessionId: string }) {
           </div>
           {live && <p className="chat-composer-note">{`You can speak and type in this conversation. Your microphone is ${conversation.isMuted ? "off" : "on"}.`}</p>}
         </>}
-        {!live ? <div className="chat-send-row">
+        {!live && !editingPrevious ? <div className="chat-send-row">
           <span className="chat-composer-note">Speak or type in the same conversation. Starting requires microphone permission.</span>
-          <button type="button" className="button primary" disabled={starting || !state || conversation.status === "connecting"} onClick={() => void start()}>
+          <button type="button" className="button primary" disabled={starting || !state || state.status === "loading" || conversation.status === "connecting"} onClick={() => void start()}>
             {starting || conversation.status === "connecting" ? "Starting…" : hasStarted || (state?.revision ?? 0) > 0 ? "Keep going" : "Start talking"}<span aria-hidden="true">●</span></button>
-        </div> : <>
+        </div> : live && !editingPrevious ? <>
           <div className="chat-send-row">
             <button type="button" className="chat-back" onClick={() => conversation.setMuted(!conversation.isMuted)}>{conversation.isMuted ? "Turn microphone on" : "Turn microphone off"}</button>
             <button type="button" className="button secondary" onClick={() => conversation.endSession()}>Take a break</button>
           </div>
-        </>}
+        </> : editingPrevious ? <p className="chat-composer-note">Update this answer, then press Send to continue.</p> : null}
+        {history.length > 0 && <div className="chat-send-row">
+          <button type="button" className="chat-back" disabled={saving} onClick={goBack}>← Back</button>
+        </div>}
       </form>
     </div>
     {error && <div className="error-message" role="alert">{error}</div>}

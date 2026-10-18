@@ -391,11 +391,19 @@ def calculate_field_table_lookup(
 
 @app.delete("/sessions/{key}")
 def clear(key: str):
-    sessions.pop(key, None)
+    entry = sessions.pop(key, None)
     documents.pop(key, None)
     task = simplification_tasks.pop(key, None)
     if task:
         task.cancel()
+    if entry and entry[1].agent_state:
+        source_key = entry[1].agent_state.source_simplification_session_id
+        if source_key:
+            sessions.pop(source_key, None)
+            documents.pop(source_key, None)
+            source_task = simplification_tasks.pop(source_key, None)
+            if source_task:
+                source_task.cancel()
     return {"cleared": True}
 
 from .voice import router as voice_router

@@ -54,6 +54,70 @@ it('returns backend validation errors to the agent instead of throwing', async (
   expect(JSON.parse(result)).toEqual({ error: 'The amount must be at least 0.', status: 422 });
 });
 
+it('shows typed input while voice is disconnected and saves directly to the backend', async () => {
+  const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+    if (url.endsWith('/next-question')) return reply(state(0));
+    if (url.endsWith('/glossary')) return reply({ terms: [] });
+    if (url.endsWith('/answers')) return reply({ saved: true, next: state(1, 'complete') });
+    throw Error(`unexpected ${url} ${init?.method}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  render(<GuidedConversation sessionId="s1" />);
+
+  const input = await screen.findByRole('textbox', { name: 'Type your answer' });
+  fireEvent.change(input, { target: { value: '2' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+  await waitFor(() => expect(screen.getByRole('link', { name: /Review my answers/ })).toBeTruthy());
+  const [, init] = fetchMock.mock.calls.find(([url]) => url.endsWith('/answers'))!;
+  expect(JSON.parse(init!.body as string)).toEqual({ question_id: 'kids', value: 2, raw_response: '2', revision: 0 });
+
+  fireEvent.click(screen.getByRole('button', { name: '← Back' }));
+  expect(screen.getByText('How many children under 17?')).toBeTruthy();
+  expect((screen.getByRole('textbox', { name: 'Type your answer' }) as HTMLInputElement).value).toBe('2');
+  expect(screen.getByText('Update this answer, then press Send to continue.')).toBeTruthy();
+});
+it('shows choice options as buttons and saves a clicked option', async () => {
+  const choice = { ...question, id: 'status', input_type: 'choice', simplified_question: 'Which filing status fits you?',
+    options: ['Single', 'Married filing jointly', 'Head of household'] };
+  const choiceState = { ...state(0), question: choice };
+  const fetchMock = vi.fn((url: string, _init?: RequestInit) => {
+    if (url.endsWith('/next-question')) return reply(choiceState);
+    if (url.endsWith('/glossary')) return reply({ terms: [] });
+    if (url.endsWith('/answers')) return reply({ saved: true, next: state(1, 'complete') });
+    throw Error(`unexpected ${url}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  render(<GuidedConversation sessionId="s1" />);
+
+  fireEvent.click(await screen.findByRole('button', { name: /Married filing jointly/ }));
+  await waitFor(() => expect(screen.getByRole('link', { name: /Review my answers/ })).toBeTruthy());
+  const [, init] = fetchMock.mock.calls.find(([url]) => url.endsWith('/answers'))!;
+  expect(JSON.parse(init!.body as string)).toEqual({
+    question_id: 'status', value: 'Married filing jointly', raw_response: 'Married filing jointly', revision: 0,
+  });
+});
+
+it('shows loading instead of original wording until Gemini finishes the current question', async () => {
+  let polls = 0;
+  const loading = { ...state(0), status: 'loading', question };
+  const fetchMock = vi.fn((url: string) => {
+    if (url.endsWith('/glossary')) return reply({ terms: [] });
+    if (url.endsWith('/next-question')) {
+      polls += 1;
+      return reply(polls === 1 ? loading : state(0));
+    }
+    throw Error(`unexpected ${url}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  render(<GuidedConversation sessionId="s1" />);
+
+  expect(await screen.findByText('Loading this question…')).toBeTruthy();
+  expect(screen.queryByText(question.original_text)).toBeNull();
+  expect(screen.queryByRole('textbox', { name: 'Type your answer' })).toBeNull();
+  expect(await screen.findByText('How many children under 17?', {}, { timeout: 2000 })).toBeTruthy();
+  expect(polls).toBeGreaterThanOrEqual(2);
+});
 it('uses the introduction once and resumes at the latest question after a break',async()=>{
  let revision=0;
  vi.stubGlobal('fetch',vi.fn((url:string)=>url.endsWith('/agent-session')?reply({signed_url:'wss://synthetic'})
@@ -109,35 +173,4 @@ it('keeps the typed draft when sending to the live conversation fails',async()=>
  fireEvent.change(input,{target:{value:'My draft'}});fireEvent.click(screen.getByRole('button',{name:'Send'}));
  expect((input as HTMLInputElement).value).toBe('My draft');
  expect(screen.getByRole('alert').textContent).toContain('could not be sent');
-});
-
-it('starts one voice-enabled session for typing and keeps it when muting or sending more text',async()=>{
- const fetchMock=vi.fn((url:string)=>url.endsWith('/glossary')?reply({terms:[]}):url.endsWith('/agent-session')?reply({signed_url:'wss://synthetic'}):reply(state(0)));
- vi.stubGlobal('fetch',fetchMock);
- const {rerender}=render(<GuidedConversation sessionId="s1"/>);
- const input=await screen.findByRole('textbox',{name:'Type your answer or ask a question'});
- fireEvent.change(input,{target:{value:'I like pizza'}});fireEvent.click(screen.getByRole('button',{name:'Send'}));
- await waitFor(()=>expect(calls.send).toHaveBeenCalledWith('I like pizza'));
- expect(calls.start.mock.calls[0][0]).toMatchObject({textOnly:false,connectionType:'websocket'});
- expect(fetchMock.mock.calls.some(([url])=>url.endsWith('/typed-answers') || url.endsWith('/answers'))).toBe(false);
- act(()=>calls.onMessage!({source:'ai',message:'Please give the number of children under 17.'}));
- expect(screen.getByText('Please give the number of children under 17.')).toBeTruthy();
- expect(screen.getByText('How many children under 17?')).toBeTruthy();
- expect(screen.queryByRole('link',{name:/Review my answers/})).toBeNull();
- calls.status='connected';rerender(<GuidedConversation sessionId="s1"/>);
- fireEvent.click(screen.getByRole('button',{name:'Turn microphone off'}));
- expect(calls.mute).toHaveBeenCalledWith(true);
- fireEvent.change(input,{target:{value:'Two children'}});fireEvent.click(screen.getByRole('button',{name:'Send'}));
- await waitFor(()=>expect(calls.send).toHaveBeenCalledWith('Two children'));
- expect(calls.start).toHaveBeenCalledOnce();
- expect(screen.getByText('I like pizza')).toBeTruthy();
-});
-
-it('keeps the draft and does not send or save when text chat cannot connect',async()=>{
- vi.stubGlobal('fetch',vi.fn((url:string)=>url.endsWith('/glossary')?reply({terms:[]}):url.endsWith('/agent-session')?reply({detail:'Chat unavailable'},false,502):reply(state(0))));
- render(<GuidedConversation sessionId="s1"/>);
- const input=await screen.findByRole('textbox',{name:'Type your answer or ask a question'});
- fireEvent.change(input,{target:{value:'My answer'}});fireEvent.click(screen.getByRole('button',{name:'Send'}));
- expect(await screen.findByRole('alert')).toHaveProperty('textContent','Chat unavailable');
- expect(calls.send).not.toHaveBeenCalled();expect((input as HTMLInputElement).value).toBe('My answer');
 });

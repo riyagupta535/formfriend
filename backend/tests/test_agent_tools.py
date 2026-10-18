@@ -5,7 +5,7 @@ import pytest
 import pymupdf
 from fastapi.testclient import TestClient
 from app.main import app, sessions, documents
-from app.models import Session
+from app.models import FormField, Session
 from app.parser import extract_fields
 
 
@@ -278,8 +278,10 @@ def upload_demo(client):
     return response.json()
 
 
-def test_upload_becomes_guided_session_with_pdf_mapping_and_name_rule(client):
+def test_upload_becomes_guided_session_with_pdf_mapping_and_name_rule(client, monkeypatch):
+    monkeypatch.setattr('app.main.start_simplification', lambda _key: None)
     uploaded=upload_demo(client)
+    sessions[uploaded['session_id']][1].simplification_status='complete'
     created=client.post('/agent/sessions/from-upload',json={'document_session_id':uploaded['session_id']})
     assert created.status_code==200,created.text
     key=created.json()['session_id']
@@ -292,3 +294,35 @@ def test_upload_becomes_guided_session_with_pdf_mapping_and_name_rule(client):
     assert answer(client,key,name.id,'Maria Lopez').status_code==200
     again=client.post('/agent/sessions/from-upload',json={'document_session_id':key})
     assert again.status_code==409
+
+
+def test_upload_opens_guide_and_syncs_each_question_while_simplification_runs(client):
+    field = FormField(
+        field_id='name', original_question='1 Name', simplified_question='1 Name',
+        source_page=1, source_rect=[], simplification_status='pending',
+    )
+    source = Session(
+        session_id='pending-source', filename='form.pdf', mode='gemini',
+        simplification_status='running', fields=[field],
+    )
+    sessions[source.session_id] = (time.monotonic(), source)
+    documents[source.session_id] = b'%PDF-synthetic'
+
+    response = client.post('/agent/sessions/from-upload', json={'document_session_id': source.session_id})
+
+    assert response.status_code == 200, response.text
+    assert response.json()['status'] == 'loading'
+    guided_id = response.json()['session_id']
+    assert source.session_id in sessions
+
+    field.simplified_question = 'What is your name?'
+    field.helper_text = 'Enter your legal name.'
+    field.simplification_status = 'complete'
+    field.simplification_confidence = 'high'
+    source.simplification_status = 'complete'
+
+    ready = client.get(f'/agent/sessions/{guided_id}/next-question')
+    assert ready.status_code == 200
+    assert ready.json()['status'] == 'question'
+    assert ready.json()['question']['simplified_question'] == 'What is your name?'
+    assert source.session_id not in sessions
