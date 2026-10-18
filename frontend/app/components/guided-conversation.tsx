@@ -18,27 +18,6 @@ type NextState = {
 type Learned = { term: string; explanation: string; example: string };
 type Line = { id: number; speaker: "friend" | "you"; text: string };
 
-function typedValue(question: Question, text: string): unknown {
-  const value = text.trim();
-  const normalized = value.toLowerCase();
-  if (question.input_type === "boolean") {
-    if (["yes", "y", "true"].includes(normalized)) return true;
-    if (["no", "n", "false"].includes(normalized)) return false;
-  }
-  if (question.input_type === "number" || question.input_type === "currency") {
-    const number = Number(value.replace(/[$,\s]/g, ""));
-    if (Number.isFinite(number)) return number;
-  }
-  if (question.input_type === "choice") {
-    return question.options.find(option => option.toLowerCase() === normalized) ?? value;
-  }
-  if (question.input_type === "multichoice") {
-    const requested = value.split(",").map(option => option.trim()).filter(Boolean);
-    return requested.map(item => question.options.find(option => option.toLowerCase() === item.toLowerCase()) ?? item);
-  }
-  return value;
-}
-
 /** Calls an /agent endpoint and turns errors into text the agent can act on, instead of throwing. */
 async function tool(path: string, init?: RequestInit) {
   const response = await fetch(`${API}/agent/sessions/${path}`, init);
@@ -131,6 +110,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
         ...(resuming ? {overrides: {agent: {firstMessage}}} : {}),
       });
       setHasStarted(true);
+      conversation.sendContextualUpdate("Apply the same relevance, clarity, and specificity checks to spoken AND typed messages. A typed message can also be a clarification request, not an answer. Ask a follow-up when needed; only save clear answers using save_answer, and follow validation errors without advancing.");
       if (resuming) conversation.sendContextualUpdate(
         "This is a continuation of the same form after a break. Do not repeat your introduction or ask if the person is ready. " +
         "Your opening message already asks the current question. Use get_next_question for saved progress. " +
@@ -161,11 +141,12 @@ function Conversation({ sessionId }: { sessionId: string }) {
     if (!question || state?.status !== "question") return;
     setSaving(true);
     try {
-      const result = await tool(`${sessionId}/answers`, post({question_id: question.id,
-        value: typedValue(question, text), raw_response: text, revision: revision.current}));
+      const result = await tool(`${sessionId}/typed-answers`, post({question_id: question.id,
+        text, revision: revision.current}));
       if (result.ok) {
         track(result.body.next);
-        setLines(current => [...current, {id: ++lineId.current, speaker: "you", text}]);
+        setLines(current => [...current, {id: ++lineId.current, speaker: "you", text},
+          ...(result.body.reply ? [{id: ++lineId.current, speaker: "friend" as const, text: result.body.reply}] : [])]);
         setTyped("");
       } else setError(JSON.parse(result.text).error);
     } catch {

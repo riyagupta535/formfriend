@@ -406,3 +406,6 @@ app.include_router(review_router)
 
 from .agent_tools import router as agent_router
 app.include_router(agent_router)
+
+from .typed_answers import router as typed_router
+app.include_router(typed_router)

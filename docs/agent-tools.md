@@ -209,3 +209,9 @@ answers are inferred or saved by the resume operation. The hosted agent must
 allow first-message overrides; the creation script enables that setting for new
 agents. Saved answers survive a break for the session lifetime; recent unsaved
 dialogue context is kept only while the guide page stays open.
+
+## Typed conversation validation
+
+While voice is connected, typed messages go to the same ElevenLabs conversation and its answer-saving tools. Without voice, the UI posts raw text, current question ID, and revision to `POST /agent/sessions/{key}/typed-answers`. The configured StepFun model checks relevance and specificity, interprets clear answers into canonical types, or returns a clarification/explanation without saving. The shared deterministic type, option and generated field rules still run before saving. Progress/revision are checked again after the provider call so a concurrent voice answer cannot be overwritten.
+
+A missing key, unavailable provider or malformed model response leaves the answer unsaved. Meaning checks are model judgments and can be imperfect; review answers at the end. No per-answer confirmation is added.

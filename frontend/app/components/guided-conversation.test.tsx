@@ -58,7 +58,7 @@ it('shows typed input while voice is disconnected and saves directly to the back
   const fetchMock = vi.fn((url: string, init?: RequestInit) => {
     if (url.endsWith('/next-question')) return reply(state(0));
     if (url.endsWith('/glossary')) return reply({ terms: [] });
-    if (url.endsWith('/answers')) return reply({ saved: true, next: state(1, 'complete') });
+    if (url.endsWith('/typed-answers')) return reply({ saved: true, next: state(1, 'complete') });
     throw Error(`unexpected ${url} ${init?.method}`);
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -69,8 +69,8 @@ it('shows typed input while voice is disconnected and saves directly to the back
   fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 
   await waitFor(() => expect(screen.getByRole('link', { name: /Review my answers/ })).toBeTruthy());
-  const [, init] = fetchMock.mock.calls.find(([url]) => url.endsWith('/answers'))!;
-  expect(JSON.parse(init!.body as string)).toEqual({ question_id: 'kids', value: 2, raw_response: '2', revision: 0 });
+  const [, init] = fetchMock.mock.calls.find(([url]) => url.endsWith('/typed-answers'))!;
+  expect(JSON.parse(init!.body as string)).toEqual({ question_id: 'kids', text: '2', revision: 0 });
 });
 
 it('uses the introduction once and resumes at the latest question after a break',async()=>{
@@ -86,8 +86,7 @@ it('uses the introduction once and resumes at the latest question after a break'
  fireEvent.click(screen.getByRole('button',{name:/Keep going/}));
  await waitFor(()=>expect(calls.start).toHaveBeenCalledTimes(2));
  expect(calls.start.mock.calls[1][0].overrides).toEqual({agent:{firstMessage:'What is your annual income?'}});
- await waitFor(()=>expect(calls.context).toHaveBeenCalledOnce());
- expect(calls.context.mock.calls[0][0]).toContain('Do not repeat your introduction');
+ await waitFor(()=>expect(calls.context.mock.calls.some(([text])=>text.includes('Do not repeat your introduction'))).toBe(true));
 });
 
 it('skips the introduction for a session with existing saved progress',async()=>{
@@ -116,7 +115,7 @@ it('keeps speech and typed messages in the same live conversation without restar
  act(()=>calls.onMessage!({source:'user',message:'Yes, both are under seventeen'}));
  expect(screen.getByText('Yes, both are under seventeen')).toBeTruthy();
  expect(calls.start).not.toHaveBeenCalled();expect(calls.mute).not.toHaveBeenCalled();
- expect(fetchMock.mock.calls.some(([url])=>url.endsWith('/answers'))).toBe(false);
+ expect(fetchMock.mock.calls.some(([url])=>url.endsWith('/typed-answers'))).toBe(false);
  expect((input as HTMLInputElement).value).toBe('');
 });
 
@@ -132,7 +131,7 @@ it('keeps the typed draft when sending to the live conversation fails',async()=>
 });
 
 it('preserves typed-only answer saving when voice is disconnected',async()=>{
- const fetchMock=vi.fn((url:string)=>url.endsWith('/glossary')?reply({terms:[]}):url.endsWith('/answers')?reply({saved:true,next:state(1,'complete')}):reply(state(0)));
+ const fetchMock=vi.fn((url:string)=>url.endsWith('/glossary')?reply({terms:[]}):url.endsWith('/typed-answers')?reply({saved:true,next:state(1,'complete')}):reply(state(0)));
  vi.stubGlobal('fetch',fetchMock);
  render(<GuidedConversation sessionId="s1"/>);
  const input=await screen.findByRole('textbox',{name:'Type your answer or ask a question'});
@@ -140,4 +139,15 @@ it('preserves typed-only answer saving when voice is disconnected',async()=>{
  await screen.findByRole('link',{name:/Review my answers/});
  expect(calls.send).not.toHaveBeenCalled();expect(calls.start).not.toHaveBeenCalled();
  expect(screen.getByText('2')).toBeTruthy();
+});
+
+it('shows a typed-answer follow-up and stays on the same question without advancing',async()=>{
+ const fetchMock=vi.fn((url:string)=>url.endsWith('/glossary')?reply({terms:[]}):url.endsWith('/typed-answers')?reply({saved:false,reply:'Please give the number of children under 17.',next:state(0)}):reply(state(0)));
+ vi.stubGlobal('fetch',fetchMock);
+ render(<GuidedConversation sessionId="s1"/>);
+ const input=await screen.findByRole('textbox',{name:'Type your answer or ask a question'});
+ fireEvent.change(input,{target:{value:'I like pizza'}});fireEvent.click(screen.getByRole('button',{name:'Send'}));
+ expect(await screen.findByText('Please give the number of children under 17.')).toBeTruthy();
+ expect(screen.getByText('How many children under 17?')).toBeTruthy();
+ expect(screen.queryByRole('link',{name:/Review my answers/})).toBeNull();
 });
