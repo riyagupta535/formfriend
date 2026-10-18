@@ -3,7 +3,7 @@ import Link from "next/link";
 import { Footer, Header } from "../components/shell";
 
 export const metadata: Metadata = {
-  title: "How it works | forma",
+  title: "How it works | Forma",
   description: "Upload your form, answer simpler questions, and review your document with forma.",
 };
 
