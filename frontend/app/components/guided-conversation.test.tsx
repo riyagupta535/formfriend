@@ -77,6 +77,47 @@ it('shows typed input while voice is disconnected and saves directly to the back
   expect((screen.getByRole('textbox', { name: 'Type your answer' }) as HTMLInputElement).value).toBe('2');
   expect(screen.getByText('Update this answer, then press Send to continue.')).toBeTruthy();
 });
+it('shows choice options as buttons and saves a clicked option', async () => {
+  const choice = { ...question, id: 'status', input_type: 'choice', simplified_question: 'Which filing status fits you?',
+    options: ['Single', 'Married filing jointly', 'Head of household'] };
+  const choiceState = { ...state(0), question: choice };
+  const fetchMock = vi.fn((url: string, _init?: RequestInit) => {
+    if (url.endsWith('/next-question')) return reply(choiceState);
+    if (url.endsWith('/glossary')) return reply({ terms: [] });
+    if (url.endsWith('/answers')) return reply({ saved: true, next: state(1, 'complete') });
+    throw Error(`unexpected ${url}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  render(<GuidedConversation sessionId="s1" />);
+
+  fireEvent.click(await screen.findByRole('button', { name: /Married filing jointly/ }));
+  await waitFor(() => expect(screen.getByRole('link', { name: /Review my answers/ })).toBeTruthy());
+  const [, init] = fetchMock.mock.calls.find(([url]) => url.endsWith('/answers'))!;
+  expect(JSON.parse(init!.body as string)).toEqual({
+    question_id: 'status', value: 'Married filing jointly', raw_response: 'Married filing jointly', revision: 0,
+  });
+});
+
+it('shows loading instead of original wording until Gemini finishes the current question', async () => {
+  let polls = 0;
+  const loading = { ...state(0), status: 'loading', question };
+  const fetchMock = vi.fn((url: string) => {
+    if (url.endsWith('/glossary')) return reply({ terms: [] });
+    if (url.endsWith('/next-question')) {
+      polls += 1;
+      return reply(polls === 1 ? loading : state(0));
+    }
+    throw Error(`unexpected ${url}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  render(<GuidedConversation sessionId="s1" />);
+
+  expect(await screen.findByText('Loading this question…')).toBeTruthy();
+  expect(screen.queryByText(question.original_text)).toBeNull();
+  expect(screen.queryByRole('textbox', { name: 'Type your answer' })).toBeNull();
+  expect(await screen.findByText('How many children under 17?', {}, { timeout: 2000 })).toBeTruthy();
+  expect(polls).toBeGreaterThanOrEqual(2);
+});
 it('uses the introduction once and resumes at the latest question after a break',async()=>{
  let revision=0;
  vi.stubGlobal('fetch',vi.fn((url:string)=>url.endsWith('/agent-session')?reply({signed_url:'wss://synthetic'})

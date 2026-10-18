@@ -143,18 +143,54 @@ def get_agent_session(key):
 
 
 def visible_fields(session):
+    sync_source_simplifications(session)
     refresh_applicability(session)
     return [f for f in session.fields if f.status not in {'not_applicable', 'blocked'}]
 
 
+def sync_source_simplifications(session):
+    """Copy completed per-question Gemini results into a live guided session."""
+    source_id = session.agent_state.source_simplification_session_id
+    if not source_id:
+        return None
+    from .main import documents, sessions
+    entry = sessions.get(source_id)
+    if entry is None:
+        session.agent_state.source_simplification_session_id = None
+        return None
+    source = entry[1]
+    for question, target, source_field in zip(session.agent_state.questions, session.fields, source.fields):
+        if source_field.simplification_status == 'complete':
+            simplified = strip_form_reference(source_field.simplified_question or source_field.original_question)
+            question.simplified_question = simplified
+            question.help_text = source_field.helper_text or source_field.source_context[:2000]
+            target.simplified_question = simplified
+            target.helper_text = source_field.helper_text
+            target.simplification_status = 'complete'
+            target.simplification_confidence = source_field.simplification_confidence
+        elif source_field.simplification_status == 'failed':
+            target.simplification_status = 'failed'
+    if source.simplification_status in {'complete', 'partial'}:
+        session.agent_state.source_simplification_session_id = None
+        sessions.pop(source_id, None)
+        documents.pop(source_id, None)
+        return None
+    return source
+
+
 def next_question(session):
+    source = sync_source_simplifications(session)
     fields = {f.field_id: f for f in session.fields}
     question = next((q for q in session.agent_state.questions if fields[q.id].status == 'unanswered'), None)
     blocked = [q.id for q in session.agent_state.questions if fields[q.id].status == 'blocked']
+    waiting = False
+    if question is not None and source is not None:
+        index = session.agent_state.questions.index(question)
+        waiting = source.fields[index].simplification_status == 'pending'
     return {
         'session_id': session.session_id,
         'revision': session.agent_state.revision,
-        'status': 'question' if question else 'blocked' if blocked else 'complete',
+        'status': 'loading' if waiting else 'question' if question else 'blocked' if blocked else 'complete',
         'question': question.model_dump() if question else None,
         'blocked_question_ids': blocked,
         'progress': {status: sum(f.status == status for f in session.fields)
@@ -294,9 +330,13 @@ async def create_agent_session_from_upload(body: FromUploadRequest):
     except ValidationError:
         raise HTTPException(422, 'This form could not be turned into guided questions.') from None
     created = await create_agent_session(request)
-    sessions.pop(source.session_id, None)
-    documents.pop(source.session_id, None)
-    return created
+    guided = get_session(created['session_id'])
+    if source.simplification_status in {'pending', 'running'}:
+        guided.agent_state.source_simplification_session_id = source.session_id
+    else:
+        sessions.pop(source.session_id, None)
+        documents.pop(source.session_id, None)
+    return next_question(guided)
 
 
 @router.get('/sessions/{key}/next-question', operation_id='get_next_question')

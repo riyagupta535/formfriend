@@ -12,7 +12,7 @@ type Question = {
   source_reference?: { page?: number | null; section?: string | null } | null;
 };
 type NextState = {
-  session_id: string; revision: number; status: "question" | "complete" | "blocked";
+  session_id: string; revision: number; status: "loading" | "question" | "complete" | "blocked";
   question: Question | null; progress: Record<string, number>;
 };
 type Learned = { term: string; explanation: string; example: string };
@@ -65,6 +65,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
   const [hasStarted, setHasStarted] = useState(false);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [editingPrevious, setEditingPrevious] = useState(false);
+  const [selectedOptions, setSelectedOptions] = useState<string[]>([]);
   const revision = useRef<number | undefined>(undefined);
   const latestState = useRef<NextState | null>(null);
   const lineId = useRef(0);
@@ -105,6 +106,14 @@ function Conversation({ sessionId }: { sessionId: string }) {
     tool(`${sessionId}/glossary`).then(result => { if (result.ok) setLearned(result.body.terms); });
   }, [sessionId]);
   useEffect(() => { transcript.current?.scrollTo?.({ top: transcript.current.scrollHeight }); }, [lines]);
+  useEffect(() => { setSelectedOptions([]); }, [state?.question?.id]);
+  useEffect(() => {
+    if (state?.status !== "loading") return;
+    const timer = window.setTimeout(() => {
+      void tool(`${sessionId}/next-question`).then(result => result.ok ? track(result.body) : setError(JSON.parse(result.text).error));
+    }, 750);
+    return () => window.clearTimeout(timer);
+  }, [sessionId, state]);
 
   // Client tools: the browser binds the session and revision so the model never handles them.
   useConversationClientTool("get_next_question", async () => {
@@ -177,10 +186,9 @@ function Conversation({ sessionId }: { sessionId: string }) {
     } finally { setStarting(false); connecting.current = false; }
   }
 
-  async function send(event: React.FormEvent) {
-    event.preventDefault();
-    const text = typed.trim();
-    if (!text || !question || connecting.current || starting || conversation.status === "connecting") return;
+  async function submitAnswer(answer: string) {
+    const text = answer.trim();
+    if (!text || !question || state?.status !== "question" || connecting.current || starting || conversation.status === "connecting") return;
     setError("");
     if (live && !editingPrevious) {
       try {
@@ -213,11 +221,18 @@ function Conversation({ sessionId }: { sessionId: string }) {
     } finally { setSaving(false); }
   }
 
+  function send(event: React.FormEvent) {
+    event.preventDefault();
+    void submitAnswer(typed);
+  }
+
   const progress = state?.progress ?? {};
   const done = (progress.answered ?? 0) + (progress.skipped ?? 0);
   const total = done + (progress.unanswered ?? 0) + (progress.blocked ?? 0);
   const question = state?.question;
   const reference = question?.source_reference;
+  const options = question?.input_type === "boolean" && question.options.length === 0
+    ? ["Yes", "No"] : question?.options ?? [];
 
   return <section className="chat-workspace guide" aria-label="Talk with Form Friend">
     <div className="chat-heading">
@@ -229,10 +244,28 @@ function Conversation({ sessionId }: { sessionId: string }) {
       <progress value={done} max={Math.max(total, 1)} aria-label="Questions done" />
       <div className="guide-body">
         <div className="guide-main">
+          {state?.status === "loading" && <div className="chat-message chat-friend-current" role="status" aria-live="polite">
+            <div className="chat-message-meta"><span className="chat-speaker">Preparing your next step</span></div>
+            <h2>Loading this question…</h2>
+            <p>Gemini is turning the form wording into a simpler question.</p>
+          </div>}
           {question && state?.status === "question" && <div className="chat-message chat-friend-current">
             <div className="chat-message-meta"><span className="chat-speaker">Now answering</span>{reference?.section && <span>{reference.section.toUpperCase()}</span>}</div>
             <h2 aria-live="polite">{question.simplified_question}</h2>
-            {question.options.length > 0 && <ul className="guide-options">{question.options.map(option => <li key={option}>{option}</li>)}</ul>}
+            {(question.input_type === "choice" || question.input_type === "boolean") && options.length > 0 && <div className="decision-options" role="group" aria-label="Answer choices">
+              {options.map(option => <button key={option} type="button" className="decision-option" disabled={saving} onClick={() => void submitAnswer(option)}>
+                {option}<span aria-hidden="true">→</span>
+              </button>)}
+            </div>}
+            {question.input_type === "multichoice" && options.length > 0 && <div className="decision-options" role="group" aria-label="Select all that apply">
+              {options.map(option => <button key={option} type="button" aria-pressed={selectedOptions.includes(option)}
+                className={`decision-option ${selectedOptions.includes(option) ? "selected" : ""}`} disabled={saving}
+                onClick={() => setSelectedOptions(current => current.includes(option) ? current.filter(item => item !== option) : [...current, option])}>
+                {option}<span aria-hidden="true">{selectedOptions.includes(option) ? "✓" : "+"}</span>
+              </button>)}
+              <button type="button" className="button secondary" disabled={saving || selectedOptions.length === 0}
+                onClick={() => void submitAnswer(selectedOptions.join(", "))}>Save selected choices</button>
+            </div>}
             <details className="source-details" key={question.id}>
               <summary>ⓘ What the form says</summary>
               {reference?.page && <p><strong>From page {reference.page}</strong></p>}
@@ -272,7 +305,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
         </>}
         {!live && !editingPrevious ? <div className="chat-send-row">
           <span className="chat-composer-note">Speak or type in the same conversation. Starting requires microphone permission.</span>
-          <button type="button" className="button primary" disabled={starting || !state || conversation.status === "connecting"} onClick={() => void start()}>
+          <button type="button" className="button primary" disabled={starting || !state || state.status === "loading" || conversation.status === "connecting"} onClick={() => void start()}>
             {starting || conversation.status === "connecting" ? "Starting…" : hasStarted || (state?.revision ?? 0) > 0 ? "Keep going" : "Start talking"}<span aria-hidden="true">●</span></button>
         </div> : live && !editingPrevious ? <>
           <div className="chat-send-row">

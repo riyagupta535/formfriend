@@ -41,3 +41,25 @@ it('turns an upload into a guided conversation and opens it', async () => {
   expect(JSON.parse(bridge[1]!.body as string)).toEqual({ document_session_id: 'upload' });
   expect(sessionStorage.getItem('formfriend-session')).toBe('guided');
 });
+
+it('opens the guide immediately while Gemini simplification is pending', async () => {
+  const calls: string[] = [];
+  const fetchMock = vi.fn(async (url: string, options?: RequestInit) => {
+    calls.push(url);
+    if (url.endsWith('/sessions') && options?.method === 'POST') return { ok: true, json: async () => ({
+      session_id: 'upload', mode: 'gemini', simplification_status: 'pending', fields: [], warnings: [],
+    }) };
+    if (url.endsWith('/agent/sessions/from-upload')) return { ok: true, json: async () => ({ session_id: 'guided' }) };
+    if (url.endsWith('/sessions/guided')) return { ok: true, json: async () => ({ session_id: 'guided', fields: [], warnings: [] }) };
+    throw Error(`Unexpected request: ${url}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  render(<Workflow stage="upload" />);
+
+  fireEvent.change(document.getElementById('document') as HTMLInputElement,
+    { target: { files: [new File(['pdf'], 'form.pdf', { type: 'application/pdf' })] } });
+
+  await waitFor(() => expect(push).toHaveBeenCalledWith('/guide'), { timeout: 2000 });
+  expect(calls).not.toContain('http://localhost:8000/sessions/upload');
+  expect(calls).toContain('http://localhost:8000/agent/sessions/from-upload');
+});

@@ -7,6 +7,7 @@ import os
 import httpx
 from pydantic import ValidationError
 
+from .gemini_cache import delete_response, get_response, put_response, response_key
 from .models import FormField, SimplificationBatch
 from .text_utils import strip_form_reference
 
@@ -230,6 +231,13 @@ def _chunks(fields: list[FormField], size: int = BATCH_SIZE) -> Iterable[list[Fo
         yield fields[start:start + size]
 
 
+def _answer_options(field: FormField) -> list[str]:
+    """Expose the two user-facing outcomes implicit in a checkbox control."""
+    if field.answer_type == "checkbox" and not field.options:
+        return ["Yes", "No"]
+    return field.options
+
+
 def _request_fields(fields: list[FormField]) -> list[dict]:
     return [
         {
@@ -238,7 +246,7 @@ def _request_fields(fields: list[FormField]) -> list[dict]:
             "question_number": field.question_number,
             "section_title": field.section_title,
             "answer_type": field.answer_type,
-            "options": field.options,
+            "options": _answer_options(field),
             "source_context": field.source_context[:800],
             "worksheet_dependency": (
                 {
@@ -275,6 +283,7 @@ def _validate_batch(batch: SimplificationBatch, fields: list[FormField]) -> None
 
     for field_id, result in returned.items():
         source = expected[field_id]
+        source_options = _answer_options(source)
         tree = result.decision_tree
         calculation = result.calculation
         if calculation is not None:
@@ -331,11 +340,11 @@ def _validate_batch(batch: SimplificationBatch, fields: list[FormField]) -> None
                     raise ValueError("A calculation outcome must match a different supplied choice.")
         else:
             for item in result.subquestions:
-                if item.options and item.options != source.options:
+                if item.options and item.options != source_options:
                     raise ValueError("Gemini changed supplied answer options.")
         if tree is None:
             continue
-        if source.answer_type != "choice" or len(source.options) < 2:
+        if source.answer_type not in {"choice", "checkbox"} or len(source_options) < 2:
             raise ValueError("Gemini created a decision tree for a field without choices.")
         if result.subquestions:
             raise ValueError("A branching field cannot also contain flat subquestions.")
@@ -362,7 +371,7 @@ def _validate_batch(batch: SimplificationBatch, fields: list[FormField]) -> None
             for answer in node.answers:
                 if answer.next_node_id is not None:
                     visit(answer.next_node_id, depth + 1, next_path)
-                elif answer.terminal_option not in source.options:
+                elif answer.terminal_option not in source_options:
                     raise ValueError("A decision branch changed an original option.")
                 else:
                     terminals.add(answer.terminal_option)
@@ -370,7 +379,7 @@ def _validate_batch(batch: SimplificationBatch, fields: list[FormField]) -> None
         visit(tree.start_node_id, 1, set())
         if visited != set(nodes):
             raise ValueError("A decision tree contains unreachable nodes.")
-        if terminals != set(source.options):
+        if terminals != set(source_options):
             raise ValueError("A decision tree does not cover every original option.")
 
 
@@ -389,6 +398,35 @@ async def _request_batch(
         + "\n\n"
         + OUTPUT_INSTRUCTIONS
     )
+    cache_key = response_key({
+        "base_url": os.getenv(
+            "GEMINI_BASE_URL",
+            "https://generativelanguage.googleapis.com/v1beta",
+        ).rstrip("/"),
+        "model": model,
+        "thinking_level": os.getenv("GEMINI_THINKING_LEVEL", "minimal"),
+        "system_prompt": SYSTEM_PROMPT,
+        "request_text": request_text,
+        "response_schema": RESPONSE_SCHEMA,
+    })
+    cached_content = get_response(cache_key)
+    if cached_content is not None:
+        try:
+            cached = SimplificationBatch.model_validate_json(cached_content)
+            _validate_batch(cached, fields)
+            logger.info(
+                "Gemini cache hit; model=%s field_ids=%s",
+                model,
+                [field.field_id for field in fields],
+            )
+            return cached
+        except (ValueError, ValidationError):
+            delete_response(cache_key)
+            logger.warning(
+                "Discarded invalid Gemini cache entry; model=%s field_ids=%s",
+                model,
+                [field.field_id for field in fields],
+            )
     response = await client.post(
         os.getenv(
             "GEMINI_BASE_URL",
@@ -428,6 +466,7 @@ async def _request_batch(
         raise ValueError("Gemini returned empty text content.")
     batch = SimplificationBatch.model_validate_json(content)
     _validate_batch(batch, fields)
+    put_response(cache_key, content)
     return batch
 
 
@@ -648,7 +687,15 @@ async def simplify_fields(fields: list[FormField]) -> list[str]:
     semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
     failed = 0
     async with httpx.AsyncClient(timeout=httpx.Timeout(60, connect=15)) as client:
-        tasks = [asyncio.create_task(_run_batch(client, batch, semaphore)) for batch in batches]
+        # Give the first question exclusive access to Gemini so the guide can
+        # display it without competing with background requests for later fields.
+        for source_fields, response in await _run_batch(client, batches[0], semaphore):
+            failed += _apply_response(source_fields, response, document_fields)
+
+        tasks = [
+            asyncio.create_task(_run_batch(client, batch, semaphore))
+            for batch in batches[1:]
+        ]
         try:
             for completed in asyncio.as_completed(tasks):
                 for source_fields, response in await completed:

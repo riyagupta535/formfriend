@@ -124,6 +124,7 @@ class AgentState(BaseModel):
     revision: int = 0
     raw_responses: dict[str, str] = Field(default_factory=dict)
     glossary: dict[str, 'GlossaryEntry'] = Field(default_factory=dict)
+    source_simplification_session_id: str | None = None
 
 
 class GlossaryEntry(BaseModel):

@@ -301,6 +301,7 @@ def test_gemini_batches_context_and_applies_structured_results(monkeypatch):
     import httpx
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("GEMINI_BASE_URL", "https://gemini.example/v1beta")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
     fields = [
         FormField(
             field_id="name", original_question="Legal name", section_title="Identity",
@@ -378,6 +379,50 @@ def test_gemini_batches_context_and_applies_structured_results(monkeypatch):
     assert fields[1].subquestions[0].options == ["Individual", "Partnership"]
     assert fields[1].simplification_confidence == "medium"
 
+def test_gemini_reuses_valid_cached_response_without_an_api_call(monkeypatch, tmp_path):
+    import httpx
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_BASE_URL", "https://gemini.example/v1beta")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
+    monkeypatch.setenv("GEMINI_CACHE_TTL_SECONDS", "3600")
+    monkeypatch.setenv("GEMINI_CACHE_PATH", str(tmp_path / "gemini.sqlite3"))
+    calls = 0
+
+    async def fake_post(self, url, **kwargs):
+        nonlocal calls
+        calls += 1
+        content = json.dumps({"results": [{
+            "field_id": "name",
+            "plain_question": "What is your legal name?",
+            "helper_text": "Use the name on your official records.",
+            "subquestions": [],
+            "calculation": None,
+            "decision_tree": None,
+            "confidence": "high",
+        }]})
+        return httpx.Response(200, json={"candidates": [{
+            "finishReason": "STOP",
+            "content": {"parts": [{"text": content}]},
+        }]}, request=httpx.Request("POST", url))
+
+    def field():
+        return FormField(
+            field_id="name", original_question="Legal name", section_title="Identity",
+            source_context="Enter the name shown on your official records.",
+            source_page=1, source_rect=[], simplification_status="pending",
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    first = field()
+    second = field()
+    assert asyncio.run(simplify_fields([first])) == []
+    assert asyncio.run(simplify_fields([second])) == []
+
+    assert calls == 1
+    assert second.simplified_question == "What is your legal name?"
+    assert second.simplification_status == "complete"
+    assert (tmp_path / "gemini.sqlite3").exists()
+
 def test_decision_tree_covers_exact_original_options():
     from app.conversation import _validate_batch
     from app.models import SimplificationBatch
@@ -419,6 +464,38 @@ def test_decision_tree_covers_exact_original_options():
     invalid = SimplificationBatch.model_validate(payload)
     with pytest.raises(ValueError, match="changed an original option"):
         _validate_batch(invalid, [field])
+
+def test_checkbox_is_sent_and_validated_as_an_implicit_yes_no_choice():
+    from app.conversation import _request_fields, _validate_batch
+    from app.models import SimplificationBatch
+    field = FormField(
+        field_id="multiple-jobs", original_question="Check this box if there are two jobs",
+        answer_type="checkbox", options=[], source_page=1, source_rect=[],
+    )
+    assert _request_fields([field])[0]["options"] == ["Yes", "No"]
+
+    batch = SimplificationBatch.model_validate({"results": [{
+        "field_id": "multiple-jobs",
+        "plain_question": "Are there exactly two jobs in your household?",
+        "helper_text": None,
+        "subquestions": [],
+        "calculation": None,
+        "decision_tree": {
+            "start_node_id": "two-jobs",
+            "nodes": [{
+                "node_id": "two-jobs",
+                "question": "Are there exactly two jobs in your household?",
+                "helper_text": None,
+                "answers": [
+                    {"label": "Yes", "next_node_id": None, "terminal_option": "Yes"},
+                    {"label": "No", "next_node_id": None, "terminal_option": "No"},
+                ],
+            }],
+        },
+        "confidence": "high",
+    }]})
+
+    _validate_batch(batch, [field])
 
 def test_llm_child_credit_calculation_is_validated_and_applied():
     from app.conversation import _apply_response, _validate_batch
@@ -700,6 +777,42 @@ def test_gemini_rate_limit_stays_pending_and_retries_until_success(monkeypatch, 
     assert field.simplification_status == "complete"
     assert field.simplified_question == "What is your home address?"
     assert "keeping questions pending and retrying" in caplog.text
+
+def test_first_question_finishes_before_background_requests_start(monkeypatch):
+    from app.models import SimplificationBatch
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    fields = [
+        FormField(
+            field_id=f"field-{index}", original_question=f"Question {index}",
+            source_page=1, source_rect=[], simplification_status="pending",
+        )
+        for index in range(4)
+    ]
+    started = []
+
+    async def fake_run_batch(client, requested, semaphore):
+        field = requested[0]
+        started.append(field.field_id)
+        if field is not fields[0]:
+            assert fields[0].simplification_status == "complete"
+        response = SimplificationBatch.model_validate({"results": [{
+            "field_id": field.field_id,
+            "plain_question": f"Simplified {field.original_question}?",
+            "helper_text": None,
+            "subquestions": [],
+            "calculation": None,
+            "decision_tree": None,
+            "confidence": "high",
+        }]})
+        return [(requested, response)]
+
+    monkeypatch.setattr("app.conversation._run_batch", fake_run_batch)
+    warnings = asyncio.run(simplify_fields(fields))
+
+    assert warnings == []
+    assert started[0] == "field-0"
+    assert {field.field_id for field in fields[1:]} == set(started[1:])
+    assert all(field.simplification_status == "complete" for field in fields)
 
 def test_failed_batch_is_retried_as_individual_questions(monkeypatch):
     from app.conversation import _run_batch
