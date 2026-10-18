@@ -43,6 +43,14 @@ width:168px}
 .forma-logo{display:block;
 width:100%;
 height:auto}
+.site-header .brand{width:auto;gap:9px}
+.nav-logo-icon{display:block;width:36px;height:auto;flex-shrink:0}
+.nav-logo-wordmark{font-family:var(--font-body),Arial,Helvetica,sans-serif;
+color:var(--ink);
+font-size:38px;
+font-weight:500;
+line-height:1.1;
+letter-spacing:-.035em}
 nav{display:flex;
 gap:38px;
 align-items:center;
@@ -715,6 +723,9 @@ gap:20px}
 @media(max-width:640px){.site-header{height:82px;
 padding:0 20px}
 .brand{width:132px}
+.site-header .brand{gap:7px}
+.nav-logo-icon{width:28px}
+.nav-logo-wordmark{font-size:30px}
 nav{gap:10px}
 nav>a:first-child{display:none}
 .nav-start{padding:10px 13px;
