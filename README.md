@@ -41,10 +41,29 @@ confidence when applicable, and whether the source was a fillable widget, regula
 PDF text layer, or scanned page. Related
 checkbox options are returned as one choice question.
 
-Without STEP_API_KEY the UI explicitly labels its mock mode. Set the key
-in the root .env to use Step 5 Preview; no other model is substituted.
-STEP_BASE_URL and STEP_MODEL are configurable. Real-provider calls require
-credentials and are not covered by offline tests.
+Without `GEMINI_API_KEY` the UI explicitly labels its mock mode. Set the key
+in the root `.env` to use Gemini. `GEMINI_BASE_URL`, `GEMINI_MODEL`, and
+`GEMINI_THINKING_LEVEL` are configurable. The default is
+`gemini-3.5-flash-lite` with minimal thinking. Real-provider calls require
+credentials. Each question is sent in its own JSON-mode request, with up to
+three requests running concurrently. Returned JSON is validated locally.
+The model receives the stable field ID, label,
+answer type, choices, section, and bounded nearby text—not the original file or
+user answers. Upload returns as soon as extraction finishes; Gemini runs in
+tracked background batches while the questions page polls for completed results.
+Invalid or unavailable batches are attempted up to three times with exponential
+backoff, honoring a provider `Retry-After` delay when supplied. A batch that still
+fails is split into individual question requests so one bad result does not discard
+the other questions. Pending fields display a loading state while each completed
+batch becomes usable. Clearing or expiring a session cancels its unfinished task.
+If Gemini ends with `finishReason: MAX_TOKENS`, the retry budget increases from 4,096
+to 8,192 and then 16,384 tokens so complex decision trees can finish their JSON.
+
+For complex choice fields, Gemini may return a short conditional decision tree
+instead of a generic “Select your…” prompt. Each path is limited to three
+questions, every branch must resolve to an exact original form option, and the
+backend rejects changed, missing, duplicated, or unreachable choices. The UI
+skips irrelevant follow-ups and saves only the resolved original option.
 
 ## Tests
 
@@ -92,16 +111,18 @@ browser speech synthesis. Browser autoplay restrictions can require clicking
 where available; microphone permission is required. Browser voice recognition
 may use the browser vendor's speech service. Mute preference is saved locally.
 
-StepFun receives extracted field labels when configured; ElevenLabs receives
+Gemini receives extracted field labels when configured; ElevenLabs receives
 simplified questions when configured. Neither receives the original document
 or answers through these integrations. Provider integration references:
-[StepFun](https://platform.stepfun.com/cookbook/step-5-vision-structured) and
+[Gemini](https://ai.google.dev/gemini-api/docs) and
 [ElevenLabs](https://elevenlabs.io/docs/api-reference/text-to-speech/convert).
 
 Sessions and original uploads stay in temporary backend memory for one hour;
 the browser stores only the session ID for navigation. Restarting the backend
 clears all sessions. This local prototype has no production authentication.
-Dynamic follow-up subquestions and answer interpretation are not implemented.
+Gemini can return up to three short explanatory subquestions per field; they are
+stored as guidance while the original field retains one answer. Conditional
+subquestions use the validated decision-tree flow described above.
 Real-provider calls require credentials and are not covered by offline tests.
 
 Try `examples/demo-form.pdf` for a synthetic three-question demonstration.
@@ -146,7 +167,7 @@ questions independently of document extraction.
 ### Independent voice demo
 
 With frontend and backend running, open http://localhost:3000/voice-demo.
-No upload or Step 5 credentials are needed for this route. It uses three
+No upload or Gemini credentials are needed for this route. It uses three
 sample questions and shows confirmed answers with their field IDs, ready
 for integration with the answer-processing service. Actual question audio
 requires the ElevenLabs environment variables described above.
