@@ -6,6 +6,7 @@ import re
 import secrets
 import time
 from datetime import date
+from decimal import Decimal, InvalidOperation
 from uuid import uuid4
 
 from collections import Counter
@@ -29,24 +30,68 @@ router = APIRouter(prefix='/agent', tags=['agent tools'], dependencies=[Depends(
 
 
 def check_rules(question, value):
-    """Apply generated validation rules. Failures are 422s so the agent asks a follow-up."""
+    """Apply only the closed validators supported by the backend."""
     rules = question.validation
-    if rules is None or isinstance(rules, str):
-        return
     def fail(default):
         raise HTTPException(422, rules.message or default)
-    if question.input_type in {'number', 'currency'}:
-        if rules.min is not None and value < rules.min:
+
+    if (question.input_type in {'number', 'currency'} or rules.kind in {'integer', 'decimal_number'}
+            or rules.min is not None or rules.max is not None):
+        try:
+            numeric = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            fail('Enter a number using digits only, without words or extra text.')
+        if not numeric.is_finite():
+            fail('Enter a finite number.')
+        if rules.kind == 'integer' and numeric != numeric.to_integral_value():
+            fail('Enter a whole number without decimals.')
+        if rules.min is not None and numeric < Decimal(str(rules.min)):
             fail(f'The amount must be at least {rules.min}. Check the number with the person.')
-        if rules.max is not None and value > rules.max:
+        if rules.max is not None and numeric > Decimal(str(rules.max)):
             fail(f'The amount must be at most {rules.max}. Check the number with the person.')
-    elif isinstance(value, str):
+
+    if isinstance(value, str):
         if rules.min_length is not None and len(value) < rules.min_length:
             fail(f'The answer looks too short (needs at least {rules.min_length} characters). Ask again.')
         if rules.max_length is not None and len(value) > rules.max_length:
             fail(f'The answer is too long (at most {rules.max_length} characters). Ask for a shorter answer.')
-        if rules.pattern is not None and not re.fullmatch(rules.pattern, value):
-            fail('The answer is not in the format this form needs. Ask again, explaining the format.')
+        kind = rules.kind
+        if kind == 'person_name' and (not re.search(r'[^\W\d_]', value) or re.search(r'\d', value)):
+            fail("Enter a name using letters rather than numbers or unrelated text.")
+        if kind == 'social_security_number' and not _valid_ssn(value):
+            fail('Enter a 9-digit Social Security number in the format XXX-XX-XXXX.')
+        if kind == 'employer_identification_number' and not re.fullmatch(r'\d{2}-?\d{7}', value):
+            fail('Enter a 9-digit employer identification number in the format XX-XXXXXXX.')
+        if kind == 'taxpayer_identification_number' and not (
+            _valid_ssn(value) or re.fullmatch(r'\d{2}-?\d{7}', value)
+        ):
+            fail('Enter a valid 9-digit SSN or employer identification number.')
+        if kind == 'email' and not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', value):
+            fail('Enter an email address with a name, @ sign, and domain.')
+        if kind == 'phone_number':
+            digits = re.sub(r'\D', '', value)
+            if not re.fullmatch(r'\+?[\d\s().-]+(?:\s*(?:x|ext\.?)[\s\d]+)?', value, re.I) or not 10 <= len(digits) <= 15:
+                fail('Enter a phone number with 10 to 15 digits.')
+        if kind == 'us_postal_code' and not re.fullmatch(r'\d{5}(?:-\d{4})?', value):
+            fail('Enter a 5-digit ZIP code, optionally followed by four more digits.')
+        if kind == 'us_state_code' and not re.fullmatch(r'[A-Za-z]{2}', value):
+            fail('Enter the two-letter state abbreviation.')
+        if kind == 'year' and not re.fullmatch(r'\d{4}', value):
+            fail('Enter a four-digit year.')
+        if kind in {'past_date', 'future_date'}:
+            parsed = date.fromisoformat(value)
+            if kind == 'past_date' and parsed >= date.today():
+                fail('Enter a date before today.')
+            if kind == 'future_date' and parsed <= date.today():
+                fail('Enter a date after today.')
+
+
+def _valid_ssn(value: str) -> bool:
+    match = re.fullmatch(r'(\d{3})-?(\d{2})-?(\d{4})', value)
+    if not match:
+        return False
+    area, group, serial = match.groups()
+    return area not in {'000', '666'} and not area.startswith('9') and group != '00' and serial != '0000'
 
 
 def encoded(question, value):
@@ -164,8 +209,13 @@ def sync_source_simplifications(session):
             simplified = strip_form_reference(source_field.simplified_question or source_field.original_question)
             question.simplified_question = simplified
             question.help_text = source_field.helper_text or source_field.source_context[:2000]
+            question.validation = source_field.validation.model_copy(deep=True)
             target.simplified_question = simplified
             target.helper_text = source_field.helper_text
+            target.subquestions = [item.model_copy(deep=True) for item in source_field.subquestions]
+            target.calculation = source_field.calculation.model_copy(deep=True) if source_field.calculation else None
+            target.decision_tree = source_field.decision_tree.model_copy(deep=True) if source_field.decision_tree else None
+            target.validation = source_field.validation.model_copy(deep=True)
             target.simplification_status = 'complete'
             target.simplification_confidence = source_field.simplification_confidence
         elif source_field.simplification_status == 'failed':
@@ -187,11 +237,20 @@ def next_question(session):
     if question is not None and source is not None:
         index = session.agent_state.questions.index(question)
         waiting = source.fields[index].simplification_status == 'pending'
+    question_payload = question.model_dump() if question else None
+    if question is not None:
+        field = fields[question.id]
+        question_payload.update({
+            'subquestions': [item.model_dump() for item in field.subquestions],
+            'calculation': field.calculation.model_dump() if field.calculation else None,
+            'decision_tree': field.decision_tree.model_dump() if field.decision_tree else None,
+        })
     return {
         'session_id': session.session_id,
         'revision': session.agent_state.revision,
         'status': 'loading' if waiting else 'question' if question else 'blocked' if blocked else 'complete',
-        'question': question.model_dump() if question else None,
+        'question': question_payload,
+        'prior_answers': {field.field_id: field.user_response or '' for field in session.fields},
         'blocked_question_ids': blocked,
         'progress': {status: sum(f.status == status for f in session.fields)
                      for status in ['answered', 'unanswered', 'skipped', 'not_applicable', 'blocked']},
@@ -285,11 +344,6 @@ async def create_agent_session(body: AgentSessionRequest):
     return next_question(session)
 
 
-# A name must contain a letter and no digits; catches typed "1234". Spoken nonsense is the agent's job.
-NAME_RULE = {'pattern': r'(?=.*[^\W\d_])[^\d]+',
-             'message': "That doesn't look like a name. Names don't have numbers. Ask for their name again."}
-
-
 def questions_from_fields(session):
     """Turn parsed upload fields into agent questions, until LLM question generation replaces this."""
     name_counts = Counter(name for field in session.fields for name in field.pdf_field_names)
@@ -311,7 +365,7 @@ def questions_from_fields(session):
             'help_text': field.source_context[:2000], 'input_type': input_type, 'required': False,
             'options': field.options if input_type in {'choice', 'multichoice'} else [],
             'pdf_field_name': unique_name if session.document_type == 'pdf' else None,
-            'validation': NAME_RULE if input_type == 'text' and re.search(r'\bname\b', original, re.I) else None,
+            'validation': field.validation.model_dump(),
             'source_reference': {'page': field.source_page if field.source_page >= 1 else None,
                                  'section': field.section_title},
         })

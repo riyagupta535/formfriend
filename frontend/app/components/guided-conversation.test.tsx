@@ -77,6 +77,29 @@ it('shows typed input while voice is disconnected and saves directly to the back
   expect((screen.getByRole('textbox', { name: 'Type your answer' }) as HTMLInputElement).value).toBe('2');
   expect(screen.getByText('Update this answer, then press Send to continue.')).toBeTruthy();
 });
+
+it('shows deterministic validation errors and stays on the current typed question', async () => {
+  const fetchMock = vi.fn((url: string, _init?: RequestInit) => {
+    if (url.endsWith('/next-question')) return reply(state(0));
+    if (url.endsWith('/glossary')) return reply({ terms: [] });
+    if (url.endsWith('/answers')) return reply(
+      { detail: 'Enter a 9-digit Social Security number in the format XXX-XX-XXXX.' }, false, 422,
+    );
+    throw Error(`unexpected ${url}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  render(<GuidedConversation sessionId="s1" />);
+
+  const input = await screen.findByRole('textbox', { name: 'Type your answer' });
+  fireEvent.change(input, { target: { value: 'lkj' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+  expect((await screen.findByRole('alert')).textContent).toContain(
+    'Enter a 9-digit Social Security number in the format XXX-XX-XXXX.',
+  );
+  expect(screen.getByText('How many children under 17?')).toBeTruthy();
+  expect((input as HTMLInputElement).value).toBe('lkj');
+});
 it('shows choice options as buttons and saves a clicked option', async () => {
   const choice = { ...question, id: 'status', input_type: 'choice', simplified_question: 'Which filing status fits you?',
     options: ['Single', 'Married filing jointly', 'Head of household'] };
@@ -95,6 +118,47 @@ it('shows choice options as buttons and saves a clicked option', async () => {
   const [, init] = fetchMock.mock.calls.find(([url]) => url.endsWith('/answers'))!;
   expect(JSON.parse(init!.body as string)).toEqual({
     question_id: 'status', value: 'Married filing jointly', raw_response: 'Married filing jointly', revision: 0,
+  });
+});
+
+it('shows Gemini subquestions and saves their deterministic calculation', async () => {
+  const calculationQuestion = {
+    ...question,
+    simplified_question: 'Calculate your total credit amount for qualifying children under age 17.',
+    input_type: 'currency',
+    subquestions: [
+      { text: 'Is your income within the limit for this credit?', helper_text: 'The limit depends on your filing status.', answer_type: 'choice', options: ['Yes', 'No'] },
+      { text: 'How many qualifying children under age 17 do you have?', helper_text: null, answer_type: 'number', options: [] },
+    ],
+    calculation: {
+      operation: 'multiply', input_question_indices: [1], factor: 2200,
+      source_question_numbers: [], source_field_ids: [], condition_question_index: 0,
+      condition_answer: 'Yes', condition_zero_answers: ['No'], condition_skip_answers: [],
+      condition_failure_message: 'This credit does not apply based on that answer.',
+    },
+  };
+  const calculationState = { ...state(0), question: calculationQuestion, prior_answers: {} };
+  const fetchMock = vi.fn((url: string, _init?: RequestInit) => {
+    if (url.endsWith('/next-question')) return reply(calculationState);
+    if (url.endsWith('/glossary')) return reply({ terms: [] });
+    if (url.endsWith('/answers')) return reply({ saved: true, next: state(1, 'complete') });
+    throw Error(`unexpected ${url}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  render(<GuidedConversation sessionId="s1" />);
+
+  fireEvent.click(await screen.findByRole('button', { name: /^Yes/ }));
+  expect(screen.getByText('How many qualifying children under age 17 do you have?')).toBeTruthy();
+  expect(screen.queryByRole('textbox', { name: 'Type your answer' })).toBeNull();
+  fireEvent.change(screen.getByLabelText('Your answer'), { target: { value: '2' } });
+  fireEvent.click(screen.getByRole('button', { name: /Calculate/ }));
+  expect(screen.getByText('$4,400')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: /Save & continue/ }));
+
+  await waitFor(() => expect(screen.getByRole('link', { name: /Review my answers/ })).toBeTruthy());
+  const [, init] = fetchMock.mock.calls.find(([url]) => url.endsWith('/answers'))!;
+  expect(JSON.parse(init!.body as string)).toEqual({
+    question_id: 'kids', value: 4400, raw_response: '4400', revision: 0,
   });
 });
 

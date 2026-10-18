@@ -26,6 +26,14 @@ def sample():
     document.close()
     return data
 
+
+def validation(kind="none", **overrides):
+    return {
+        "kind": kind, "min": None, "max": None,
+        "min_length": None, "max_length": None, "message": None,
+        **overrides,
+    }
+
 def sample_with_unlabeled_controls():
     document = pymupdf.open()
     page = document.new_page()
@@ -325,11 +333,13 @@ def test_gemini_batches_context_and_applies_structured_results(monkeypatch):
         results = [{
                 "field_id": "name", "plain_question": "What is your legal name?",
                 "helper_text": "Use the name on your official records.",
+                "validation": validation("person_name"),
                 "subquestions": [], "decision_tree": None, "confidence": "high",
             },
             {
                 "field_id": "status", "plain_question": "What is your tax classification?",
                 "helper_text": None,
+                "validation": validation(),
                 "subquestions": [{
                     "text": "Which classification applies?", "answer_type": "choice",
                     "options": ["Individual", "Partnership"],
@@ -375,6 +385,7 @@ def test_gemini_batches_context_and_applies_structured_results(monkeypatch):
     assert name_request["source_context"].startswith("Enter the name")
     assert fields[0].simplified_question == "What is your legal name?"
     assert fields[0].helper_text == "Use the name on your official records."
+    assert fields[0].validation.kind == "person_name"
     assert fields[0].simplification_status == "complete"
     assert fields[1].subquestions[0].options == ["Individual", "Partnership"]
     assert fields[1].simplification_confidence == "medium"
@@ -395,6 +406,7 @@ def test_gemini_reuses_valid_cached_response_without_an_api_call(monkeypatch, tm
             "field_id": "name",
             "plain_question": "What is your legal name?",
             "helper_text": "Use the name on your official records.",
+            "validation": validation("person_name"),
             "subquestions": [],
             "calculation": None,
             "decision_tree": None,
@@ -434,7 +446,7 @@ def test_decision_tree_covers_exact_original_options():
     payload = {
         "results": [{
             "field_id": "filing", "plain_question": "Let’s determine your filing status.",
-            "helper_text": None, "subquestions": [], "confidence": "high",
+            "helper_text": None, "validation": validation(), "subquestions": [], "confidence": "high",
             "decision_tree": {
                 "start_node_id": "married",
                 "nodes": [
@@ -478,6 +490,7 @@ def test_checkbox_is_sent_and_validated_as_an_implicit_yes_no_choice():
         "field_id": "multiple-jobs",
         "plain_question": "Are there exactly two jobs in your household?",
         "helper_text": None,
+        "validation": validation(),
         "subquestions": [],
         "calculation": None,
         "decision_tree": {
@@ -515,6 +528,7 @@ def test_llm_child_credit_calculation_is_validated_and_applied():
         "field_id": "step-3a",
         "plain_question": "What is the total credit amount?",
         "helper_text": None,
+        "validation": validation(),
         "subquestions": [
             {
                 "text": "Is your income $200,000 or less, or $400,000 or less if married filing jointly?",
@@ -563,6 +577,7 @@ def test_llm_other_dependent_calculation_is_validated_and_applied():
         "field_id": "step-3b",
         "plain_question": "What is the total credit amount for other dependents?",
         "helper_text": None,
+        "validation": validation(),
         "subquestions": [{
             "text": "How many qualifying other dependents do you have?",
             "answer_type": "number",
@@ -615,6 +630,7 @@ def test_llm_addition_reuses_prior_field_answers():
         "field_id": "total",
         "plain_question": "Let’s calculate your total Step 3 credits.",
         "helper_text": "We’ll reuse your answers from lines 3(a) and 3(b).",
+        "validation": validation(),
         "subquestions": [
             {
                 "text": "Do you expect to claim tax credits besides credits for children or dependents?",
@@ -677,6 +693,7 @@ def test_gemini_increases_token_budget_after_length_finish(monkeypatch):
                 "field_id": "classification",
                 "plain_question": "What is your federal tax classification?",
                 "helper_text": None,
+                "validation": validation(),
                 "subquestions": [],
                 "decision_tree": None,
                 "confidence": "high",
@@ -754,6 +771,7 @@ def test_gemini_rate_limit_stays_pending_and_retries_until_success(monkeypatch, 
             "field_id": "address",
             "plain_question": "What is your home address?",
             "helper_text": None,
+            "validation": validation(),
             "subquestions": [],
             "calculation": None,
             "decision_tree": None,
@@ -799,6 +817,7 @@ def test_first_question_finishes_before_background_requests_start(monkeypatch):
             "field_id": field.field_id,
             "plain_question": f"Simplified {field.original_question}?",
             "helper_text": None,
+            "validation": validation(),
             "subquestions": [],
             "calculation": None,
             "decision_tree": None,
@@ -835,6 +854,7 @@ def test_failed_batch_is_retried_as_individual_questions(monkeypatch):
             "field_id": field.field_id,
             "plain_question": f"Simplified {field.original_question}?",
             "helper_text": None,
+            "validation": validation(),
             "subquestions": [],
             "decision_tree": None,
             "confidence": "high",

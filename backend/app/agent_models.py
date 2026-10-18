@@ -1,6 +1,5 @@
 """The Step 5 question contract and typed ElevenLabs tool payloads."""
 import math
-import re
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt, StrictStr, model_validator
 
@@ -21,23 +20,40 @@ class SourceReference(BaseModel):
     section: str | None = Field(default=None, max_length=300)
 
 
+ValidationKind = Literal[
+    'none',
+    'person_name',
+    'social_security_number',
+    'employer_identification_number',
+    'taxpayer_identification_number',
+    'email',
+    'phone_number',
+    'us_postal_code',
+    'us_state_code',
+    'integer',
+    'decimal_number',
+    'year',
+    'past_date',
+    'future_date',
+]
+
+
 class Validation(BaseModel):
-    """Optional answer rules from question generation. Unknown keys are kept for the agent to read."""
-    model_config = ConfigDict(extra='allow')
+    """Closed, deterministic answer rules selected during question generation."""
+    model_config = ConfigDict(extra='forbid')
+    kind: ValidationKind = 'none'
     min: StrictInt | StrictFloat | None = None
     max: StrictInt | StrictFloat | None = None
     min_length: int | None = Field(default=None, ge=0)
     max_length: int | None = Field(default=None, ge=1)
-    pattern: str | None = Field(default=None, max_length=500)
     message: str | None = Field(default=None, max_length=500)
 
     @model_validator(mode='after')
     def validate_rules(self):
-        if self.pattern is not None:
-            try:
-                re.compile(self.pattern)
-            except re.error:
-                raise ValueError('validation.pattern must be a valid regular expression.') from None
+        if self.min is not None and self.max is not None and self.min > self.max:
+            raise ValueError('validation.min cannot exceed validation.max.')
+        if self.min_length is not None and self.max_length is not None and self.min_length > self.max_length:
+            raise ValueError('validation.min_length cannot exceed validation.max_length.')
         return self
 
 
@@ -54,7 +70,7 @@ class AgentQuestion(BaseModel):
     # Choice questions require their allowed values; optional for the supplied boolean schema.
     options: list[str] = Field(default_factory=list, max_length=100)
     help_text: str = Field(default='', max_length=2000)
-    validation: Validation | str | None = None
+    validation: Validation = Field(default_factory=Validation)
     source_reference: SourceReference | None = None
     # Hints for the explain tool: terms a person may not know. Empty means the question is plain enough.
     key_terms: list[str] = Field(default_factory=list, max_length=10)
@@ -71,6 +87,27 @@ class AgentQuestion(BaseModel):
             raise ValueError('Options must be unique and nonempty.')
         if self.input_type in {'choice', 'multichoice'} and not self.options:
             raise ValueError('Choice questions require options.')
+        text_kinds = {
+            'person_name', 'social_security_number', 'employer_identification_number',
+            'taxpayer_identification_number', 'email', 'phone_number',
+            'us_postal_code', 'us_state_code', 'year',
+        }
+        if self.validation.kind in text_kinds and self.input_type not in {'text', 'address'}:
+            raise ValueError('This validation kind requires a text answer.')
+        if self.validation.kind in {'integer', 'decimal_number'} and self.input_type not in {
+            'text', 'number', 'currency'
+        }:
+            raise ValueError('This validation kind requires a numeric-compatible answer.')
+        if self.validation.kind in {'past_date', 'future_date'} and self.input_type != 'date':
+            raise ValueError('This validation kind requires a date answer.')
+        if (self.validation.min is not None or self.validation.max is not None) and self.input_type not in {
+            'text', 'number', 'currency'
+        }:
+            raise ValueError('Numeric limits require a numeric-compatible answer.')
+        if (self.validation.min_length is not None or self.validation.max_length is not None) and self.input_type not in {
+            'text', 'address'
+        }:
+            raise ValueError('Length limits require a text answer.')
         if self.show_if and isinstance(self.show_if.value, float) and not math.isfinite(self.show_if.value):
             raise ValueError('Conditions must use finite values.')
         return self

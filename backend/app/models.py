@@ -1,6 +1,6 @@
 from typing import Literal
 from pydantic import BaseModel, Field, model_validator
-from .agent_models import AgentState
+from .agent_models import AgentState, Validation
 
 class SubQuestion(BaseModel):
     text: str = Field(min_length=1, max_length=200)
@@ -138,6 +138,7 @@ class FormField(BaseModel):
     table_lookup: TableLookupSpec | None = None
     pay_period_calculation: PayPeriodCalculationSpec | None = None
     eligibility_workflow: EligibilityWorkflow | None = None
+    validation: Validation = Field(default_factory=Validation)
     simplification_status: Literal["pending", "complete", "failed"] = "complete"
     simplification_confidence: Literal["high", "medium", "low"] = "low"
     answer_type: Literal["text", "number", "currency", "date", "checkbox", "choice", "multichoice"] = "text"
@@ -174,6 +175,7 @@ class FieldSimplification(BaseModel):
     subquestions: list[SubQuestion] = Field(default_factory=list, max_length=3)
     calculation: CalculationSpec | None = None
     decision_tree: DecisionTree | None = None
+    validation: Validation
     confidence: Literal["high", "medium", "low"]
 
 class SimplificationBatch(BaseModel):

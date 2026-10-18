@@ -3,17 +3,20 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { ConversationProvider, useConversation, useConversationClientTool } from "@elevenlabs/react";
 import Mascot from "./mascot";
+import GuidedCalculation, { type CalculationSpec, type GuidedQuestion } from "./guided-calculation";
+import { chooseDecisionAnswer, currentDecisionNode, type DecisionStep, type DecisionTree } from "./decision-tree";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 type Question = {
   id: string; original_text: string; simplified_question: string; help_text?: string;
   input_type: string; options: string[]; required: boolean;
+  subquestions?: GuidedQuestion[]; calculation?: CalculationSpec | null; decision_tree?: DecisionTree | null;
   source_reference?: { page?: number | null; section?: string | null } | null;
 };
 type NextState = {
   session_id: string; revision: number; status: "loading" | "question" | "complete" | "blocked";
-  question: Question | null; progress: Record<string, number>;
+  question: Question | null; progress: Record<string, number>; prior_answers?: Record<string, string>;
 };
 type Learned = { term: string; explanation: string; example: string };
 type Line = { id: number; speaker: "friend" | "you"; text: string };
@@ -66,6 +69,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [editingPrevious, setEditingPrevious] = useState(false);
   const [selectedOptions, setSelectedOptions] = useState<string[]>([]);
+  const [decisionPath, setDecisionPath] = useState<DecisionStep[]>([]);
   const revision = useRef<number | undefined>(undefined);
   const latestState = useRef<NextState | null>(null);
   const lineId = useRef(0);
@@ -106,7 +110,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
     tool(`${sessionId}/glossary`).then(result => { if (result.ok) setLearned(result.body.terms); });
   }, [sessionId]);
   useEffect(() => { transcript.current?.scrollTo?.({ top: transcript.current.scrollHeight }); }, [lines]);
-  useEffect(() => { setSelectedOptions([]); }, [state?.question?.id]);
+  useEffect(() => { setSelectedOptions([]); setDecisionPath([]); }, [state?.question?.id]);
   useEffect(() => {
     if (state?.status !== "loading") return;
     const timer = window.setTimeout(() => {
@@ -221,6 +225,31 @@ function Conversation({ sessionId }: { sessionId: string }) {
     } finally { setSaving(false); }
   }
 
+  async function skipCurrentQuestion() {
+    if (!question || state?.status !== "question") return;
+    setSaving(true); setError("");
+    try {
+      const result = await tool(`${sessionId}/skip`, post({ question_id: question.id, revision: revision.current }));
+      if (result.ok) {
+        remember(question, "");
+        track(result.body.next);
+      } else setError(JSON.parse(result.text).error);
+    } catch {
+      setError("This question could not be skipped. Please try again.");
+    } finally { setSaving(false); }
+  }
+
+  function chooseBranch(label: string) {
+    if (!question?.decision_tree) return;
+    try {
+      const result = chooseDecisionAnswer(question.decision_tree, decisionPath, label);
+      setDecisionPath(result.path);
+      if (result.terminalOption) void submitAnswer(result.terminalOption);
+    } catch (cause) {
+      setError((cause as Error).message);
+    }
+  }
+
   function send(event: React.FormEvent) {
     event.preventDefault();
     void submitAnswer(typed);
@@ -233,6 +262,10 @@ function Conversation({ sessionId }: { sessionId: string }) {
   const reference = question?.source_reference;
   const options = question?.input_type === "boolean" && question.options.length === 0
     ? ["Yes", "No"] : question?.options ?? [];
+  const guidedCalculation = !!question?.calculation;
+  const guidedDecision = !!question?.decision_tree;
+  const guidedInteraction = guidedCalculation || guidedDecision;
+  const decisionNode = question?.decision_tree ? currentDecisionNode(question.decision_tree, decisionPath) : null;
 
   return <section className="chat-workspace guide" aria-label="Talk with Form Friend">
     <div className="chat-heading">
@@ -252,12 +285,29 @@ function Conversation({ sessionId }: { sessionId: string }) {
           {question && state?.status === "question" && <div className="chat-message chat-friend-current">
             <div className="chat-message-meta"><span className="chat-speaker">Now answering</span>{reference?.section && <span>{reference.section.toUpperCase()}</span>}</div>
             <h2 aria-live="polite">{question.simplified_question}</h2>
-            {(question.input_type === "choice" || question.input_type === "boolean") && options.length > 0 && <div className="decision-options" role="group" aria-label="Answer choices">
+            {question.subquestions?.length && !guidedCalculation && !guidedDecision ? <div className="subquestion-guide">
+              <strong>Let’s break it down:</strong>
+              <ul>{question.subquestions.map((item, index) => <li key={`${question.id}-sub-${index}`}>{item.text}</li>)}</ul>
+            </div> : null}
+            {guidedCalculation && question.calculation && <GuidedCalculation key={`${question.id}-calculation`}
+              questions={question.subquestions ?? []} calculation={question.calculation}
+              priorAnswers={state.prior_answers ?? {}} busy={saving}
+              onComplete={value => value ? void submitAnswer(value) : void skipCurrentQuestion()} />}
+            {guidedDecision && decisionNode && <fieldset className="decision-card">
+              <legend>{decisionNode.question}</legend>
+              {decisionNode.helper_text && <p className="helper-text">{decisionNode.helper_text}</p>}
+              <div className="decision-options">{decisionNode.answers.map(answer =>
+                <button key={answer.label} type="button" className="decision-option" disabled={saving} onClick={() => chooseBranch(answer.label)}>
+                  {answer.label}<span aria-hidden="true">→</span>
+                </button>)}</div>
+              {decisionPath.length > 0 && <button type="button" className="text-button" onClick={() => setDecisionPath(path => path.slice(0, -1))}>← Previous step</button>}
+            </fieldset>}
+            {!guidedInteraction && (question.input_type === "choice" || question.input_type === "boolean") && options.length > 0 && <div className="decision-options" role="group" aria-label="Answer choices">
               {options.map(option => <button key={option} type="button" className="decision-option" disabled={saving} onClick={() => void submitAnswer(option)}>
                 {option}<span aria-hidden="true">→</span>
               </button>)}
             </div>}
-            {question.input_type === "multichoice" && options.length > 0 && <div className="decision-options" role="group" aria-label="Select all that apply">
+            {!guidedInteraction && question.input_type === "multichoice" && options.length > 0 && <div className="decision-options" role="group" aria-label="Select all that apply">
               {options.map(option => <button key={option} type="button" aria-pressed={selectedOptions.includes(option)}
                 className={`decision-option ${selectedOptions.includes(option) ? "selected" : ""}`} disabled={saving}
                 onClick={() => setSelectedOptions(current => current.includes(option) ? current.filter(item => item !== option) : [...current, option])}>
@@ -291,7 +341,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
         </aside>
       </div>
       <form className="chat-composer" onSubmit={send}>
-        {(live || state?.status === "question") && <>
+        {!guidedInteraction && (live || state?.status === "question") && <>
           <label htmlFor="typed-answer">Type your answer or ask a question</label>
           <div className="guide-typed">
             <input id="typed-answer" aria-label={live ? "Type your answer or ask a question" : "Type your answer"} value={typed} onChange={event => {
@@ -303,11 +353,11 @@ function Conversation({ sessionId }: { sessionId: string }) {
           </div>
           {live && <p className="chat-composer-note">{`You can speak and type in this conversation. Your microphone is ${conversation.isMuted ? "off" : "on"}.`}</p>}
         </>}
-        {!live && !editingPrevious ? <div className="chat-send-row">
+        {!guidedInteraction && !live && !editingPrevious ? <div className="chat-send-row">
           <span className="chat-composer-note">Speak or type in the same conversation. Starting requires microphone permission.</span>
           <button type="button" className="button primary" disabled={starting || !state || state.status === "loading" || conversation.status === "connecting"} onClick={() => void start()}>
             {starting || conversation.status === "connecting" ? "Starting…" : hasStarted || (state?.revision ?? 0) > 0 ? "Keep going" : "Start talking"}<span aria-hidden="true">●</span></button>
-        </div> : live && !editingPrevious ? <>
+        </div> : !guidedInteraction && live && !editingPrevious ? <>
           <div className="chat-send-row">
             <button type="button" className="chat-back" onClick={() => conversation.setMuted(!conversation.isMuted)}>{conversation.isMuted ? "Turn microphone on" : "Turn microphone off"}</button>
             <button type="button" className="button secondary" onClick={() => conversation.endSession()}>Take a break</button>

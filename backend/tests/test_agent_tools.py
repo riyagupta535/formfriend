@@ -5,13 +5,21 @@ import pytest
 import pymupdf
 from fastapi.testclient import TestClient
 from app.main import app, sessions, documents
-from app.models import FormField, Session
+from app.agent_models import Validation
+from app.models import CalculationSpec, FormField, Session, SubQuestion
 from app.parser import extract_fields
 
 
 def question(id, **overrides):
     return {'id':id,'original_text':id,'simplified_question':f'Please answer {id}?','input_type':'text',
             'depends_on':[],'show_if':None,'required':False,'pdf_field_name':None,**overrides}
+
+
+def no_validation():
+    return {
+        'kind':'none','min':None,'max':None,
+        'min_length':None,'max_length':None,'message':None,
+    }
 
 
 @pytest.fixture
@@ -126,7 +134,7 @@ def test_context_preserves_original_and_dependency_values(client):
     key=create(client,conditional_questions())
     answer(client,key,'filing_status','married_filing_jointly')
     context=client.get(f'/agent/sessions/{key}/questions/spouse_employment/context').json()
-    assert context['question']=={**conditional_questions()[0],'options':[],'help_text':'','validation':None,
+    assert context['question']=={**conditional_questions()[0],'options':[],'help_text':'','validation':no_validation(),
                                  'source_reference':None,'key_terms':[]}
     assert context['dependency_answers']=={'filing_status':'married_filing_jointly'}
     assert context['source_page'] is None
@@ -204,7 +212,8 @@ def llm_question(**overrides):
     return {'id':'agi','original_text':'Enter your adjusted gross income (AGI) from line 11.',
             'simplified_question':'How much was your total income after adjustments?',
             'help_text':'AGI is on line 11 of last year\'s Form 1040.','input_type':'currency','required':True,
-            'depends_on':[],'show_if':None,'options':[],'validation':{'min':0,'message':'Income cannot be negative.'},
+            'depends_on':[],'show_if':None,'options':[],
+            'validation':{'kind':'decimal_number','min':0,'message':'Income cannot be negative.'},
             'pdf_field_name':None,'source_reference':{'page':1,'section':'Step 2'},'key_terms':['adjusted gross income'],
             **overrides}
 
@@ -219,8 +228,8 @@ def test_accepts_full_llm_schema_and_exposes_hints(client):
 
 def test_validation_rules_trigger_follow_up(client):
     key=create(client,[llm_question(),
-                       question('zip',validation={'pattern':r'\d{5}'}),
-                       question('note',validation='Keep it short.')])
+                       question('zip',validation={'kind':'us_postal_code'}),
+                       question('note')])
     rejected=answer(client,key,'agi',-5)
     assert rejected.status_code==422 and rejected.json()['detail']=='Income cannot be negative.'
     assert answer(client,key,'agi',52000).status_code==200
@@ -229,9 +238,30 @@ def test_validation_rules_trigger_follow_up(client):
     assert answer(client,key,'note','anything').status_code==200
 
 
-def test_invalid_validation_pattern_rejected(client):
-    response=client.post('/agent/sessions',json={'questions':[question('zip',validation={'pattern':'('})]})
+def test_unknown_validation_kind_rejected(client):
+    response=client.post('/agent/sessions',json={'questions':[question('zip',validation={'kind':'made_up'})]})
     assert response.status_code==422
+
+
+@pytest.mark.parametrize('kind,bad,good',[
+    ('social_security_number','lkj','123-45-6789'),
+    ('employer_identification_number','123456','12-3456789'),
+    ('taxpayer_identification_number','not an id','12-3456789'),
+    ('email','alex.example','alex@example.com'),
+    ('phone_number','call me','(415) 555-1212'),
+    ('us_postal_code','9021','90210-1234'),
+    ('us_state_code','California','CA'),
+    ('integer','2.5','2'),
+    ('year','26','2026'),
+])
+def test_closed_validation_kinds_reject_bad_text_without_advancing(client,kind,bad,good):
+    key=create(client,[question('value',validation={'kind':kind})])
+    rejected=answer(client,key,'value',bad,revision=0)
+    assert rejected.status_code==422
+    current=client.get(f'/agent/sessions/{key}/next-question').json()
+    assert current['revision']==0
+    assert current['question']['id']=='value'
+    assert answer(client,key,'value',good,revision=0).status_code==200
 
 
 def test_explain_term_saves_agent_explanation_to_glossary(client):
@@ -278,10 +308,13 @@ def upload_demo(client):
     return response.json()
 
 
-def test_upload_becomes_guided_session_with_pdf_mapping_and_name_rule(client, monkeypatch):
+def test_upload_becomes_guided_session_with_pdf_mapping_and_generated_rule(client, monkeypatch):
     monkeypatch.setattr('app.main.start_simplification', lambda _key: None)
     uploaded=upload_demo(client)
-    sessions[uploaded['session_id']][1].simplification_status='complete'
+    source=sessions[uploaded['session_id']][1]
+    source.simplification_status='complete'
+    generated_name=next(field for field in source.fields if 'name' in field.original_question.lower())
+    generated_name.validation=Validation(kind='person_name')
     created=client.post('/agent/sessions/from-upload',json={'document_session_id':uploaded['session_id']})
     assert created.status_code==200,created.text
     key=created.json()['session_id']
@@ -317,6 +350,16 @@ def test_upload_opens_guide_and_syncs_each_question_while_simplification_runs(cl
 
     field.simplified_question = 'What is your name?'
     field.helper_text = 'Enter your legal name.'
+    field.validation = Validation(
+        kind='person_name',
+        message='Enter a name using letters, without numbers.',
+    )
+    field.subquestions = [
+        SubQuestion(text='How many qualifying children do you have?', answer_type='number'),
+    ]
+    field.calculation = CalculationSpec(
+        operation='multiply', input_question_indices=[0], factor=2200,
+    )
     field.simplification_status = 'complete'
     field.simplification_confidence = 'high'
     source.simplification_status = 'complete'
@@ -325,4 +368,12 @@ def test_upload_opens_guide_and_syncs_each_question_while_simplification_runs(cl
     assert ready.status_code == 200
     assert ready.json()['status'] == 'question'
     assert ready.json()['question']['simplified_question'] == 'What is your name?'
+    assert ready.json()['question']['validation']['kind'] == 'person_name'
+    assert ready.json()['question']['subquestions'][0]['text'] == 'How many qualifying children do you have?'
+    assert ready.json()['question']['calculation']['factor'] == 2200
+    assert ready.json()['prior_answers'] == {'name': ''}
+    rejected = answer(client, guided_id, 'name', '1234', revision=0)
+    assert rejected.status_code == 422
+    assert rejected.json()['detail'] == 'Enter a name using letters, without numbers.'
+    assert client.get(f'/agent/sessions/{guided_id}/next-question').json()['revision'] == 0
     assert source.session_id not in sessions
