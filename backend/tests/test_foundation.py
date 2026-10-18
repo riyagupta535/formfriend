@@ -770,6 +770,99 @@ def test_gemini_increases_token_budget_after_length_finish(monkeypatch):
     assert field.simplification_status == "complete"
     assert field.simplified_question == "What is your federal tax classification?"
 
+
+def test_gemini_retries_invalid_decision_tree_with_validation_feedback(monkeypatch, tmp_path):
+    import httpx
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_CACHE_PATH", str(tmp_path / "gemini.sqlite3"))
+    options = [f"Option {letter}" for letter in "ABCDEFG"]
+    field = FormField(
+        field_id="classification",
+        original_question="Choose one federal tax classification.",
+        answer_type="choice",
+        options=options,
+        source_page=1,
+        source_rect=[],
+        simplification_status="pending",
+    )
+    prompts = []
+
+    def result(decision_tree):
+        return {
+            "results": [{
+                "field_id": "classification",
+                "plain_question": "Which federal tax classification applies?",
+                "helper_text": None,
+                "validation": validation(),
+                "subquestions": [],
+                "calculation": None,
+                "decision_tree": decision_tree,
+                "confidence": "high",
+            }],
+        }
+
+    invalid_tree = {
+        "start_node_id": "start",
+        "nodes": [{
+            "node_id": "start",
+            "question": "Does Option A apply?",
+            "helper_text": None,
+            "answers": [
+                {"label": "Yes", "next_node_id": None, "terminal_option": options[0]},
+                {"label": "No", "next_node_id": None, "terminal_option": options[1]},
+            ],
+        }],
+    }
+    corrected_tree = {
+        "start_node_id": "start",
+        "nodes": [{
+            "node_id": "start",
+            "question": "Which group contains your classification?",
+            "helper_text": None,
+            "answers": [
+                *[
+                    {"label": option, "next_node_id": None, "terminal_option": option}
+                    for option in options[:5]
+                ],
+                {"label": "More options", "next_node_id": "more", "terminal_option": None},
+            ],
+        }, {
+            "node_id": "more",
+            "question": "Which remaining classification applies?",
+            "helper_text": None,
+            "answers": [
+                {"label": option, "next_node_id": None, "terminal_option": option}
+                for option in options[5:]
+            ],
+        }],
+    }
+
+    async def fake_post(self, url, **kwargs):
+        prompts.append(kwargs["json"]["contents"][0]["parts"][0]["text"])
+        content = json.dumps(result(invalid_tree if len(prompts) == 1 else corrected_tree))
+        return httpx.Response(200, json={"candidates": [{
+            "finishReason": "STOP",
+            "content": {"parts": [{"text": content}]},
+        }]}, request=httpx.Request("POST", url))
+
+    async def no_wait(delay):
+        pass
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    monkeypatch.setattr("app.conversation.asyncio.sleep", no_wait)
+
+    warnings = asyncio.run(simplify_fields([field]))
+
+    assert warnings == []
+    assert len(prompts) == 2
+    assert "CORRECTION REQUIRED" not in prompts[0]
+    assert "did not resolve every original option" in prompts[1]
+    assert "these exact 7 options" in prompts[1]
+    assert json.dumps(options, ensure_ascii=False) in prompts[1]
+    assert field.simplification_status == "complete"
+    assert field.decision_tree is not None
+    assert len(field.decision_tree.nodes) == 2
+
 def test_gemini_failure_falls_back_without_rejecting_upload(monkeypatch, caplog):
     import httpx
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
