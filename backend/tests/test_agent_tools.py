@@ -354,6 +354,34 @@ def test_upload_becomes_guided_session_with_pdf_mapping_and_generated_rule(clien
     assert again.status_code==409
 
 
+def test_large_upload_within_document_limit_becomes_guided_session(client):
+    fields = [
+        FormField(
+            field_id=f'field-{index}',
+            original_question=f'Question {index + 1}',
+            simplified_question=f'Question {index + 1}',
+            source_page=1,
+            source_rect=[],
+        )
+        for index in range(189)
+    ]
+    source = Session(
+        session_id='large-source',
+        filename='large-form.pdf',
+        mode='gemini',
+        simplification_status='complete',
+        fields=fields,
+    )
+    sessions[source.session_id] = (time.monotonic(), source)
+    documents[source.session_id] = b'%PDF-synthetic'
+
+    response = client.post('/agent/sessions/from-upload', json={'document_session_id': source.session_id})
+
+    assert response.status_code == 200, response.text
+    guided = sessions[response.json()['session_id']][1]
+    assert len(guided.agent_state.questions) == 189
+
+
 def test_upload_opens_guide_and_syncs_each_question_while_simplification_runs(client):
     field = FormField(
         field_id='name', original_question='1 Name', simplified_question='1 Name',

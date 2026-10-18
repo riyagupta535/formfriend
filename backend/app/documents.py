@@ -31,8 +31,8 @@ def extract_docx(data):
             fields.append(FormField(field_id=f'docx:{index}', original_question=text[:1000], source_page=1, source_rect=[]))
     if not fields:
         raise ValueError('No question paragraphs found. Use a Word form with question marks, colons, or blank answer lines.')
-    if len(fields) > 100:
-        raise ValueError('Please use a form with 100 fields or fewer.')
+    if len(fields) > 300:
+        raise ValueError('Please use a form with 300 fields or fewer.')
     return fields
 
 def extract_image(data):

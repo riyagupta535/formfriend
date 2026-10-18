@@ -436,8 +436,8 @@ def deduplicate_image_fields(pages: list[list[FormField]]) -> tuple[list[FormFie
         id_counts[base] = id_counts.get(base, 0) + 1
         suffix = f"-{id_counts[base]}" if id_counts[base] > 1 else ""
         field.field_id = base + suffix
-    if len(merged) > 100:
-        raise ValueError("Please use screenshots containing 100 questions or fewer.")
+    if len(merged) > 300:
+        raise ValueError("Please use screenshots containing 300 questions or fewer.")
     return merged, removed
 
 
