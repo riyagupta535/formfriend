@@ -18,9 +18,10 @@ from .parser import extract_pdf
 from .conversation import mode, simplify, simplify_fields
 from .worksheets import calculate_worksheet
 from .table_lookups import lookup_wage_table
+from .config import cors_origins
 
 app = FastAPI(title="forma")
-app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000", "http://localhost:3001"],
+app.add_middleware(CORSMiddleware, allow_origins=cors_origins(),
                    allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type"])
 # Memory-only sessions; expire after one hour, capped for this local prototype.
 sessions: dict[str, tuple[float, Session]] = {}

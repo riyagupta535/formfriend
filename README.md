@@ -8,6 +8,8 @@ FastAPI backend.
 For setup, architecture, integration status, known limits, and next steps, see
 [the project handoff](docs/HANDOFF.md).
 
+For hosting, see [Vercel frontend + Render backend deployment](docs/DEPLOYMENT.md).
+
 ## Run
 
 From this project directory:
