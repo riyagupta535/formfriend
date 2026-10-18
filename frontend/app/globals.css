@@ -35,28 +35,13 @@ padding:0 48px;
 display:flex;
 align-items:center;
 justify-content:space-between}
-.brand{font-size:26px;
-font-weight:700;
-letter-spacing:-1.2px;
-display:flex;
+.brand{display:inline-flex;
 align-items:center;
-gap:9px}
-.brand-period{color:#5cae97;
-margin-left:-8px}
-.brand-icon{width:32px;
-height:35px;
-border-radius:11px 11px 12px 4px;
-background:#347f70;
-color:#fff;
-font-size:30px;
-text-align:center;
-line-height:42px;
-position:relative}
-.brand-icon span{color:#fae5af;
-font-size:16px;
-position:absolute;
-right:4px;
-top:-12px}
+flex-shrink:0;
+width:168px}
+.forma-logo{display:block;
+width:100%;
+height:auto}
 nav{display:flex;
 gap:38px;
 align-items:center;
@@ -270,10 +255,10 @@ justify-content:space-between;
 gap:20px;
 color:#676d61;
 font-size:14px}
-.footer-brand{font-size:17px;
-font-weight:bold;
-color:#46654f;
-letter-spacing:-.5px}
+.footer-brand{display:inline-flex;
+align-items:center;
+flex-shrink:0;
+width:126px}
 .workflow{max-width:1160px;
 margin:auto;
 min-height:75vh;
@@ -706,7 +691,7 @@ gap:20px}
 }
 @media(max-width:640px){.site-header{height:82px;
 padding:0 20px}
-.brand{font-size:22px}
+.brand{width:132px}
 nav{gap:10px}
 nav>a:first-child{display:none}
 .nav-start{padding:10px 13px;
