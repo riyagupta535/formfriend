@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 
 const tools: Record<string, (params: Record<string, unknown>) => Promise<string>> = {};
@@ -51,4 +51,23 @@ it('returns backend validation errors to the agent instead of throwing', async (
   await screen.findByText('How many children under 17?');
   const result = await tools.save_answer({ question_id: 'kids', value_json: 'minus one', raw_response: 'minus one' });
   expect(JSON.parse(result)).toEqual({ error: 'The amount must be at least 0.', status: 422 });
+});
+
+it('shows typed input while voice is disconnected and saves directly to the backend', async () => {
+  const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+    if (url.endsWith('/next-question')) return reply(state(0));
+    if (url.endsWith('/glossary')) return reply({ terms: [] });
+    if (url.endsWith('/answers')) return reply({ saved: true, next: state(1, 'complete') });
+    throw Error(`unexpected ${url} ${init?.method}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  render(<GuidedConversation sessionId="s1" />);
+
+  const input = await screen.findByRole('textbox', { name: 'Type your answer' });
+  fireEvent.change(input, { target: { value: '2' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+  await waitFor(() => expect(screen.getByRole('link', { name: /Review my answers/ })).toBeTruthy());
+  const [, init] = fetchMock.mock.calls.find(([url]) => url.endsWith('/answers'))!;
+  expect(JSON.parse(init!.body as string)).toEqual({ question_id: 'kids', value: 2, raw_response: '2', revision: 0 });
 });

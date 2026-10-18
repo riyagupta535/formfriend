@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import pymupdf
 import time
 from uuid import uuid4
@@ -11,9 +12,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from urllib.parse import quote
 from .documents import extract_docx, extract_image, extract_images, export_document
-from .models import Answer, Session
+from .models import Answer, Session, TableLookupRequest, WorksheetAnswers, WorksheetResult
 from .parser import extract_pdf
-from .conversation import mode, simplify
+from .conversation import mode, simplify, simplify_fields
+from .worksheets import calculate_worksheet
+from .table_lookups import lookup_wage_table
 
 app = FastAPI(title="FormFriend")
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000", "http://localhost:3001"],
@@ -21,18 +24,81 @@ app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000", "http
 # Memory-only sessions; expire after one hour, capped for this local prototype.
 sessions: dict[str, tuple[float, Session]] = {}
 documents: dict[str, bytes] = {}
+simplification_tasks: dict[str, asyncio.Task] = {}
+logger = logging.getLogger("formfriend.sessions")
+_default_simplify = simplify
+
+
+async def simplify_legacy_upload(fields):
+    """Support the original bounded upload simplifier during the transition."""
+    semaphore = asyncio.Semaphore(3)
+    simplified_ids = set()
+    for field in fields:
+        field.simplified_question = field.original_question
+
+    async def simplify_field(field):
+        async with semaphore:
+            try:
+                question = await simplify(field.original_question)
+            except Exception:
+                return
+            field.simplified_question = question
+            simplified_ids.add(field.field_id)
+
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*(simplify_field(field) for field in fields)),
+            timeout=20,
+        )
+    except TimeoutError:
+        pass
+    return len(fields) - len(simplified_ids)
 
 def prune():
     for key, (created, _) in list(sessions.items()):
         if time.monotonic() - created > 3600:
             del sessions[key]
             documents.pop(key, None)
+            task = simplification_tasks.pop(key, None)
+            if task:
+                task.cancel()
 
 def get_session(key: str):
     prune()
     if key not in sessions:
         raise HTTPException(404, "Session expired or not found. Please upload again.")
     return sessions[key][1]
+
+async def complete_simplification(key: str):
+    entry = sessions.get(key)
+    if entry is None:
+        return
+    session = entry[1]
+    session.simplification_status = "running"
+    try:
+        warnings = await simplify_fields(session.fields)
+    except asyncio.CancelledError:
+        return
+    except Exception:
+        logger.exception("Unexpected Gemini background failure; session_id=%s", key)
+        for field in session.fields:
+            if field.simplification_status == "pending":
+                field.simplification_status = "failed"
+        warnings = [
+            "Gemini could not simplify these questions."
+        ]
+    if key not in sessions:
+        return
+    session.warnings.extend(warning for warning in warnings if warning not in session.warnings)
+    session.simplification_status = "partial" if warnings else "complete"
+
+def start_simplification(key: str):
+    task = asyncio.create_task(complete_simplification(key))
+    simplification_tasks[key] = task
+    def discard(completed: asyncio.Task):
+        if simplification_tasks.get(key) is completed:
+            simplification_tasks.pop(key, None)
+    task.add_done_callback(discard)
 
 @app.get("/health")
 def health():
@@ -85,29 +151,29 @@ async def upload(file: UploadFile | None = File(default=None),
         raise HTTPException(422, str(error)) from None
     except Exception:
         raise HTTPException(422, "This document could not be read. Please try another file.") from None
-    # Opening a form must not wait for an unbounded series of provider calls.
-    # Preserve original wording whenever simplification is slow or unavailable.
+    active_mode = mode()
+    legacy_remaining = None
+    if simplify is not _default_simplify:
+        legacy_remaining = await simplify_legacy_upload(fields)
+    elif active_mode == "mock":
+        await simplify_fields(fields)
+    else:
+        for field in fields:
+            workflow = field.worksheet or field.eligibility_workflow or field.table_lookup or field.pay_period_calculation
+            sourced_calculation = bool(field.calculation and field.calculation.source_field_ids)
+            field.simplified_question = (
+                workflow.intro_question if workflow else field.simplified_question
+                if sourced_calculation else field.original_question
+            )
+            field.helper_text = workflow.intro_helper_text if workflow else field.helper_text if sourced_calculation else None
+            field.subquestions = []
+            field.decision_tree = None
+            field.simplification_status = "complete" if workflow or sourced_calculation else "pending"
+            field.simplification_confidence = "high" if workflow or sourced_calculation else "low"
     warnings = ["Check extracted labels and answers before using your document."]
-    semaphore = asyncio.Semaphore(3)
-    simplified_ids = set()
-    for field in fields:
-        field.simplified_question = field.original_question
-    async def simplify_field(field):
-        async with semaphore:
-            try:
-                question = await simplify(field.original_question)
-            except Exception:
-                return
-            field.simplified_question = question
-            simplified_ids.add(field.field_id)
-    try:
-        await asyncio.wait_for(asyncio.gather(*(simplify_field(field) for field in fields)), timeout=20)
-    except TimeoutError:
-        pass
-    remaining = len(fields) - len(simplified_ids)
-    if remaining:
+    if legacy_remaining:
         warnings.append(
-            f"{remaining} question(s) use the original form wording because simplification was slow or unavailable. "
+            f"{legacy_remaining} question(s) use the original form wording because simplification was slow or unavailable. "
             "You can still answer and review your form."
         )
     if document_type == "pdf" and any(
@@ -137,11 +203,15 @@ async def upload(file: UploadFile | None = File(default=None),
     if len(uploads) > 1:
         filename = f"{filename} + {len(uploads) - 1} screenshot{'s' if len(uploads) > 2 else ''}"
     session = Session(session_id=uuid4().hex, filename=filename, document_type=document_type,
-                      mode=mode(), fields=fields,
+                      mode=active_mode,
+                      simplification_status="complete" if active_mode == "mock" or legacy_remaining is not None else "pending",
+                      fields=fields,
                       pdf_has_answer_sheet=any(f.extraction == "printed" for f in fields),
                       warnings=warnings + pdf_warnings)
     sessions[session.session_id] = (time.monotonic(), session)
     documents[session.session_id] = payloads[0]
+    if active_mode != "mock" and legacy_remaining is None:
+        start_simplification(session.session_id)
     return session
 
 @app.get("/sessions/{key}", response_model=Session)
@@ -174,15 +244,79 @@ async def source(key: str, field_id: str):
             return page.get_pixmap(matrix=pymupdf.Matrix(1, 1)).tobytes('png')
     return Response(await asyncio.to_thread(render), media_type='image/png')
 
+@app.get("/sessions/{key}/fields/{field_id}/worksheet/source")
+async def worksheet_source(key: str, field_id: str):
+    session = get_session(key)
+    field = next((item for item in session.fields if item.field_id == field_id), None)
+    if field is None or field.worksheet is None or session.document_type != "pdf":
+        raise HTTPException(404, "Worksheet source is available for supported PDF worksheets only.")
+    def render():
+        with pymupdf.open(stream=documents[key], filetype="pdf") as document:
+            page = document[field.worksheet.source_page - 1]
+            return page.get_pixmap(matrix=pymupdf.Matrix(1.25, 1.25)).tobytes("png")
+    return Response(await asyncio.to_thread(render), media_type="image/png")
+
+@app.get("/sessions/{key}/fields/{field_id}/eligibility/source")
+async def eligibility_source(key: str, field_id: str):
+    session = get_session(key)
+    field = next((item for item in session.fields if item.field_id == field_id), None)
+    if field is None or field.eligibility_workflow is None or session.document_type != "pdf":
+        raise HTTPException(404, "Eligibility source is available for supported PDF workflows only.")
+    def render():
+        with pymupdf.open(stream=documents[key], filetype="pdf") as document:
+            page = document[field.eligibility_workflow.source_page - 1]
+            return page.get_pixmap(matrix=pymupdf.Matrix(1.25, 1.25)).tobytes("png")
+    return Response(await asyncio.to_thread(render), media_type="image/png")
+
+@app.get("/sessions/{key}/fields/{field_id}/table-lookup/source")
+async def table_lookup_source(key: str, field_id: str):
+    session = get_session(key)
+    field = next((item for item in session.fields if item.field_id == field_id), None)
+    if field is None or field.table_lookup is None or session.document_type != "pdf":
+        raise HTTPException(404, "Table source is available for supported PDF lookups only.")
+    def render():
+        with pymupdf.open(stream=documents[key], filetype="pdf") as document:
+            page = document[field.table_lookup.source_page - 1]
+            return page.get_pixmap(matrix=pymupdf.Matrix(1.25, 1.25)).tobytes("png")
+    return Response(await asyncio.to_thread(render), media_type="image/png")
+
 @app.get("/sessions/{key}/fields/{field_id}/speech")
-async def speech(key: str, field_id: str):
+async def speech(
+    key: str,
+    field_id: str,
+    node_id: str | None = None,
+    eligibility_step: str | None = None,
+):
     session = get_session(key)
     field = next((f for f in session.fields if f.field_id == field_id), None)
     if field is None:
         raise HTTPException(404, 'Field not found.')
+    speech_text = field.simplified_question
+    if node_id is not None:
+        tree = field.decision_tree
+        node = next((item for item in tree.nodes if item.node_id == node_id), None) if tree else None
+        if node is None:
+            raise HTTPException(404, 'Decision question not found.')
+        speech_text = node.question
+    if eligibility_step is not None:
+        workflow = field.eligibility_workflow
+        if workflow is None:
+            raise HTTPException(404, "Eligibility workflow not found.")
+        condition = next(
+            (item for item in workflow.conditions if item.condition_id == eligibility_step),
+            None,
+        )
+        if condition:
+            speech_text = f"{condition.question} {condition.helper_text} {condition.unsure_help}"
+        elif eligibility_step == "eligible":
+            speech_text = f"{workflow.eligible_explanation} {workflow.certification_text}"
+        elif eligibility_step == "ineligible":
+            speech_text = workflow.ineligible_explanation
+        else:
+            raise HTTPException(404, "Eligibility explanation not found.")
     # Retain the session endpoint for compatibility; both UIs share the branch's provider logic.
     from .voice import SpeechRequest, speech as create_speech
-    return await create_speech(SpeechRequest(text=field.simplified_question))
+    return await create_speech(SpeechRequest(text=speech_text))
 
 @app.post("/sessions/{key}/fields/{field_id}", response_model=Session)
 def answer(key: str, field_id: str, answer: Answer):
@@ -208,10 +342,60 @@ def answer(key: str, field_id: str, answer: Answer):
     field.status = "answered" if answer.value.strip() else "skipped"
     return session
 
+@app.post(
+    "/sessions/{key}/fields/{field_id}/worksheet",
+    response_model=WorksheetResult,
+)
+def calculate_field_worksheet(
+    key: str,
+    field_id: str,
+    payload: WorksheetAnswers,
+):
+    session = get_session(key)
+    field = next((item for item in session.fields if item.field_id == field_id), None)
+    if field is None:
+        raise HTTPException(404, "Field not found.")
+    if field.worksheet is None:
+        raise HTTPException(422, "This field does not have a supported worksheet.")
+    try:
+        value = calculate_worksheet(field.worksheet, payload.answers)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from None
+    return WorksheetResult(value=float(value))
+
+@app.post(
+    "/sessions/{key}/fields/{field_id}/table-lookup",
+    response_model=WorksheetResult,
+)
+def calculate_field_table_lookup(
+    key: str,
+    field_id: str,
+    payload: TableLookupRequest,
+):
+    session = get_session(key)
+    field = next((item for item in session.fields if item.field_id == field_id), None)
+    if field is None:
+        raise HTTPException(404, "Field not found.")
+    if field.table_lookup is None:
+        raise HTTPException(422, "This field does not have a supported table lookup.")
+    try:
+        value = lookup_wage_table(
+            field.table_lookup,
+            payload.filing_status,
+            payload.higher_wage,
+            payload.lower_wage,
+        )
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from None
+    return WorksheetResult(value=float(value))
+
 @app.delete("/sessions/{key}")
 def clear(key: str):
     sessions.pop(key, None)
     documents.pop(key, None)
+    task = simplification_tasks.pop(key, None)
+    if task:
+        task.cancel()
     return {"cleared": True}
 
 from .voice import router as voice_router

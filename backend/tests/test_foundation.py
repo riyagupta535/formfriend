@@ -1,8 +1,11 @@
 import asyncio
+import json
 import pymupdf
 import pytest
 from app.parser import extract_fields
-from app.conversation import simplify
+from app.models import TableLookupSpec, WageRange, WageTable, WageTableRow
+from app.table_lookups import lookup_wage_table
+from app.conversation import simplify, simplify_fields
 from app.main import answer, sessions
 from app.models import Answer, FormField, Session
 from app.ocr import (
@@ -59,6 +62,70 @@ def sample_nonfillable_form():
     document.close()
     return data
 
+def sample_with_dependent_worksheet():
+    document = pymupdf.open()
+    first = document.new_page()
+    widget = pymupdf.Widget()
+    widget.field_name = "Deductions Worksheet on page 4 result"
+    widget.field_type = pymupdf.PDF_WIDGET_TYPE_TEXT
+    widget.rect = pymupdf.Rect(40, 70, 300, 100)
+    first.add_widget(widget)
+    document.new_page()
+    document.new_page()
+    worksheet = document.new_page()
+    worksheet.insert_textbox(
+        pymupdf.Rect(30, 30, 580, 500),
+        "\n".join([
+            "Step 4(b)—Deductions Worksheet",
+            "Add lines 1a, 1b, and 1c",
+            "Add lines 3a and 3b",
+            "Add lines 6a, 6b, 6c, 6d, and 6e",
+            "multiply line 7 by 94% (0.94)",
+            "Add lines 2, 4, 5, and 14",
+            "enter the result here and in Step 4(b)",
+            "$768,700 $640,600 $384,350",
+            "$32,200 $24,150 $16,100 $6,000",
+        ]),
+        fontsize=10,
+    )
+    worksheet_widget = pymupdf.Widget()
+    worksheet_widget.field_name = "Worksheet line 15"
+    worksheet_widget.field_type = pymupdf.PDF_WIDGET_TYPE_TEXT
+    worksheet_widget.rect = pymupdf.Rect(400, 600, 550, 625)
+    worksheet.add_widget(worksheet_widget)
+    data = document.tobytes()
+    document.close()
+    return data
+
+def sample_with_exemption_workflow():
+    document = pymupdf.open()
+    first = document.new_page()
+    checkbox = pymupdf.Widget()
+    checkbox.field_name = "I claim exemption from withholding for 2026. See page 2"
+    checkbox.field_type = pymupdf.PDF_WIDGET_TYPE_CHECKBOX
+    checkbox.rect = pymupdf.Rect(40, 70, 55, 85)
+    first.add_widget(checkbox)
+    instructions = document.new_page()
+    instructions.insert_textbox(
+        pymupdf.Rect(30, 30, 580, 500),
+        "\n".join([
+            "Exemption from withholding",
+            "no federal income tax liability in 2025",
+            "expect to have no federal income tax liability in 2026",
+            "line 24 on your 2025 Form 1040",
+            "lines 27a, 28, 29, and 30",
+            "you will have no income tax withheld",
+            "may owe taxes and penalties",
+            "complete Steps 1(a)",
+            "1(b), and 5",
+            "new Form W-4 by February 16, 2027",
+        ]),
+        fontsize=10,
+    )
+    data = document.tobytes()
+    document.close()
+    return data
+
 def test_pdf_field_locations():
     fields = extract_fields(sample())
     assert len(fields) == 1
@@ -94,6 +161,73 @@ def test_nonfillable_text_form_extracts_numbered_prompts():
     assert all(field.pdf_field_names == [] for field in fields)
     assert [field.question_number for field in fields] == ["1", "2", "3"]
     assert all(field.section_title is None for field in fields)
+
+def test_parser_attaches_referenced_worksheet_as_a_subtask():
+    fields = extract_fields(sample_with_dependent_worksheet())
+    assert len(fields) == 1
+    field = fields[0]
+    assert field.worksheet is not None
+    assert field.worksheet.source_page == 4
+    assert field.worksheet.result_line == "15"
+    assert len(field.worksheet.inputs) == 14
+    assert all(item.source_page != 4 for item in fields)
+
+def test_backend_calculates_w4_worksheet_from_extracted_formula():
+    from app.worksheets import calculate_worksheet
+    field = extract_fields(sample_with_dependent_worksheet())[0]
+    answers = {
+        item.input_id: (
+            "Single" if item.input_id == "filing_status"
+            else "No" if item.answer_type == "choice"
+            else "0"
+        )
+        for item in field.worksheet.inputs
+    }
+    answers.update({
+        "1a": "1000", "1b": "2000", "1c": "3000", "3a": "Yes",
+        "5": "400", "6a": "10000", "8a": "100000", "12": "500",
+    })
+    assert calculate_worksheet(field.worksheet, answers) == 12900
+
+    answers.pop("12")
+    with pytest.raises(ValueError, match="Complete every worksheet"):
+        calculate_worksheet(field.worksheet, answers)
+
+def test_parser_attaches_exemption_eligibility_conditions():
+    field = extract_fields(sample_with_exemption_workflow())[0]
+    workflow = field.eligibility_workflow
+    assert workflow is not None
+    assert workflow.source_page == 2
+    assert workflow.checked_value not in {"", "Off"}
+    assert [item.condition_id for item in workflow.conditions] == [
+        "no_2025_liability", "expect_no_2026_liability"
+    ]
+    assert "total tax" in workflow.conditions[0].unsure_help
+    assert "line 24" not in workflow.conditions[0].unsure_help
+    assert "no federal income tax" in workflow.eligible_explanation
+
+def test_wage_table_lookup_uses_filing_status_and_both_wages():
+    lookup = TableLookupSpec(
+        lookup_id="test",
+        source_page=5,
+        intro_question="Find the amount.",
+        intro_helper_text="Answer the questions.",
+        higher_wage_label="Higher wages?",
+        lower_wage_label="Lower wages?",
+        tables=[WageTable(
+            filing_status="Single",
+            columns=[WageRange(minimum=0, maximum=9999), WageRange(minimum=10000, maximum=19999)],
+            rows=[
+                WageTableRow(minimum=0, maximum=49999, values=[100, 200]),
+                WageTableRow(minimum=50000, maximum=None, values=[300, 400]),
+            ],
+        )],
+    )
+    assert lookup_wage_table(lookup, "Single", 75000, 15000) == 400
+    # Reversed user inputs are normalized to higher- and lower-paying wages.
+    assert lookup_wage_table(lookup, "Single", 15000, 75000) == 400
+    with pytest.raises(ValueError, match="outside this table"):
+        lookup_wage_table(lookup, "Single", 75000, 25000)
 
 def test_ocr_lines_keep_question_identity_and_confidence():
     lines = [
@@ -160,8 +294,487 @@ def test_overlapping_screenshot_questions_are_deduplicated():
     assert fields[1].field_id == 'image:ocr:1b'
 
 def test_mock_is_explicit(monkeypatch):
-    monkeypatch.delenv("STEP_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     assert asyncio.run(simplify("Full name")) == "Please tell me: Full name"
+
+def test_gemini_batches_context_and_applies_structured_results(monkeypatch):
+    import httpx
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_BASE_URL", "https://gemini.example/v1beta")
+    fields = [
+        FormField(
+            field_id="name", original_question="Legal name", section_title="Identity",
+            source_context="Enter the name shown on your official records.",
+            source_page=1, source_rect=[],
+        ),
+        FormField(
+            field_id="status", original_question="Tax classification", answer_type="choice",
+            options=["Individual", "Partnership"], source_page=1, source_rect=[],
+        ),
+    ]
+    captured = {"payloads": []}
+
+    async def fake_post(self, url, **kwargs):
+        captured["url"] = url
+        captured["headers"] = kwargs["headers"]
+        captured["payloads"].append(kwargs["json"])
+        request_text = kwargs["json"]["contents"][0]["parts"][0]["text"]
+        request_data = json.loads(request_text.split("\n\n", 1)[0])
+        requested_ids = {item["field_id"] for item in request_data["fields"]}
+        results = [{
+                "field_id": "name", "plain_question": "What is your legal name?",
+                "helper_text": "Use the name on your official records.",
+                "subquestions": [], "decision_tree": None, "confidence": "high",
+            },
+            {
+                "field_id": "status", "plain_question": "What is your tax classification?",
+                "helper_text": None,
+                "subquestions": [{
+                    "text": "Which classification applies?", "answer_type": "choice",
+                    "options": ["Individual", "Partnership"],
+                }],
+                "decision_tree": None,
+                "confidence": "medium",
+            },
+        ]
+        content = json.dumps({
+            "results": [item for item in results if item["field_id"] in requested_ids]
+        })
+        return httpx.Response(200, json={"candidates": [{
+            "finishReason": "STOP",
+            "content": {"parts": [{"text": content}]},
+        }]}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    warnings = asyncio.run(simplify_fields(fields))
+
+    assert warnings == []
+    assert captured["url"] == (
+        "https://gemini.example/v1beta/models/gemini-3.5-flash-lite:generateContent"
+    )
+    assert captured["headers"]["x-goog-api-key"] == "test-key"
+    assert len(captured["payloads"]) == 2
+    assert all(
+        payload["generationConfig"]["thinkingConfig"]["thinkingLevel"] == "minimal"
+        for payload in captured["payloads"]
+    )
+    assert all(
+        payload["generationConfig"]["responseMimeType"] == "application/json"
+        for payload in captured["payloads"]
+    )
+    request_fields = [
+        item
+        for payload in captured["payloads"]
+        for item in json.loads(
+            payload["contents"][0]["parts"][0]["text"].split("\n\n", 1)[0]
+        )["fields"]
+    ]
+    name_request = next(item for item in request_fields if item["field_id"] == "name")
+    assert name_request["section_title"] == "Identity"
+    assert name_request["source_context"].startswith("Enter the name")
+    assert fields[0].simplified_question == "What is your legal name?"
+    assert fields[0].helper_text == "Use the name on your official records."
+    assert fields[0].simplification_status == "complete"
+    assert fields[1].subquestions[0].options == ["Individual", "Partnership"]
+    assert fields[1].simplification_confidence == "medium"
+
+def test_decision_tree_covers_exact_original_options():
+    from app.conversation import _validate_batch
+    from app.models import SimplificationBatch
+    field = FormField(
+        field_id="filing", original_question="Select one", answer_type="choice",
+        options=["Single", "Married filing jointly", "Head of household"],
+        source_page=1, source_rect=[],
+    )
+    payload = {
+        "results": [{
+            "field_id": "filing", "plain_question": "Let’s determine your filing status.",
+            "helper_text": None, "subquestions": [], "confidence": "high",
+            "decision_tree": {
+                "start_node_id": "married",
+                "nodes": [
+                    {
+                        "node_id": "married", "question": "Are you married?", "helper_text": None,
+                        "answers": [
+                            {"label": "Yes", "next_node_id": None, "terminal_option": "Married filing jointly"},
+                            {"label": "No", "next_node_id": "household", "terminal_option": None},
+                        ],
+                    },
+                    {
+                        "node_id": "household", "question": "Do you qualify as head of household?",
+                        "helper_text": "Check the eligibility rules shown on the form.",
+                        "answers": [
+                            {"label": "Yes", "next_node_id": None, "terminal_option": "Head of household"},
+                            {"label": "No", "next_node_id": None, "terminal_option": "Single"},
+                        ],
+                    },
+                ],
+            },
+        }]
+    }
+    batch = SimplificationBatch.model_validate(payload)
+    _validate_batch(batch, [field])
+
+    payload["results"][0]["decision_tree"]["nodes"][1]["answers"][1]["terminal_option"] = "Other"
+    invalid = SimplificationBatch.model_validate(payload)
+    with pytest.raises(ValueError, match="changed an original option"):
+        _validate_batch(invalid, [field])
+
+def test_llm_child_credit_calculation_is_validated_and_applied():
+    from app.conversation import _apply_response, _validate_batch
+    from app.models import SimplificationBatch
+    field = FormField(
+        field_id="step-3a",
+        original_question=(
+            "If your total income will be $200,000 or less ($400,000 or less "
+            "if married filing jointly), multiply the number of qualifying "
+            "children under age 17 by $2,200."
+        ),
+        answer_type="currency",
+        source_page=1,
+        source_rect=[],
+    )
+    response = SimplificationBatch.model_validate({"results": [{
+        "field_id": "step-3a",
+        "plain_question": "What is the total credit amount?",
+        "helper_text": None,
+        "subquestions": [
+            {
+                "text": "Is your income $200,000 or less, or $400,000 or less if married filing jointly?",
+                "answer_type": "choice",
+                "options": ["Yes", "No"],
+            },
+            {
+                "text": "How many qualifying children under age 17 do you have?",
+                "answer_type": "number",
+                "options": [],
+            },
+        ],
+        "calculation": {
+            "operation": "multiply",
+            "input_question_indices": [1],
+            "factor": 2200,
+            "source_question_numbers": [],
+            "source_field_ids": [],
+            "condition_question_index": 0,
+            "condition_answer": "Yes",
+            "condition_failure_message": "Check the W-4 instructions for Step 3.",
+        },
+        "decision_tree": None,
+        "confidence": "high",
+    }]})
+
+    _validate_batch(response, [field])
+    assert _apply_response([field], response) == 0
+    assert field.calculation is not None
+    assert field.calculation.factor == 2200
+    assert field.calculation.input_question_indices == [1]
+    assert [item.answer_type for item in field.subquestions] == ["choice", "number"]
+    assert "$400,000" in field.subquestions[0].text
+
+def test_llm_other_dependent_calculation_is_validated_and_applied():
+    from app.conversation import _apply_response, _validate_batch
+    from app.models import SimplificationBatch
+    field = FormField(
+        field_id="step-3b",
+        original_question="Multiply the number of other dependents by $500.",
+        answer_type="currency",
+        source_page=1,
+        source_rect=[],
+    )
+    response = SimplificationBatch.model_validate({"results": [{
+        "field_id": "step-3b",
+        "plain_question": "What is the total credit amount for other dependents?",
+        "helper_text": None,
+        "subquestions": [{
+            "text": "How many qualifying other dependents do you have?",
+            "answer_type": "number",
+            "options": [],
+        }],
+        "calculation": {
+            "operation": "multiply",
+            "input_question_indices": [0],
+            "factor": 500,
+            "source_question_numbers": [],
+            "source_field_ids": [],
+            "condition_question_index": None,
+            "condition_answer": None,
+            "condition_failure_message": None,
+        },
+        "decision_tree": None,
+        "confidence": "high",
+    }]})
+
+    _validate_batch(response, [field])
+    assert _apply_response([field], response) == 0
+    assert field.calculation is not None
+    assert field.calculation.factor == 500
+    assert field.calculation.input_question_indices == [0]
+    assert field.calculation.condition_question_index is None
+    assert len(field.subquestions) == 1
+    assert field.subquestions[0].answer_type == "number"
+
+    response.results[0].calculation.factor = 750
+    with pytest.raises(ValueError, match="factor was not found"):
+        _validate_batch(response, [field])
+
+def test_llm_addition_reuses_prior_field_answers():
+    from app.conversation import _apply_response, _validate_batch
+    from app.models import SimplificationBatch
+    child_credit = FormField(
+        field_id="children", question_number="3(a)", original_question="Child credit",
+        answer_type="currency", source_page=1, source_rect=[],
+    )
+    other_dependent_credit = FormField(
+        field_id="dependents", question_number="3(b)", original_question="Other dependent credit",
+        answer_type="currency", source_page=1, source_rect=[],
+    )
+    total = FormField(
+        field_id="total", original_question=(
+            "Add the amounts from Steps 3(a) and 3(b), plus the amount for other credits."
+        ), answer_type="currency", source_page=1, source_rect=[],
+    )
+    response = SimplificationBatch.model_validate({"results": [{
+        "field_id": "total",
+        "plain_question": "Let’s calculate your total Step 3 credits.",
+        "helper_text": "We’ll reuse your answers from lines 3(a) and 3(b).",
+        "subquestions": [
+            {
+                "text": "Do you expect to claim tax credits besides credits for children or dependents?",
+                "helper_text": (
+                    "A tax credit is an amount that can lower the tax you owe. "
+                    "Do not include child or dependent credits already entered."
+                ),
+                "answer_type": "choice",
+                "options": ["Yes", "No", "I'm not sure"],
+            },
+            {
+                "text": "What is the total amount of those other tax credits?",
+                "helper_text": "Enter the total from your tax records or tax-preparation estimate.",
+                "answer_type": "currency",
+                "options": [],
+            },
+        ],
+        "calculation": {
+            "operation": "add",
+            "input_question_indices": [1],
+            "factor": None,
+            "source_question_numbers": ["3(a)", "3(b)"],
+            "source_field_ids": [],
+            "condition_question_index": 0,
+            "condition_answer": "Yes",
+            "condition_zero_answers": ["No"],
+            "condition_skip_answers": ["I'm not sure"],
+            "condition_failure_message": "Leave this blank and review it when you have your tax records.",
+        },
+        "decision_tree": None,
+        "confidence": "high",
+    }]})
+
+    _validate_batch(response, [total])
+    assert _apply_response([total], response, [child_credit, other_dependent_credit, total]) == 0
+    assert total.calculation is not None
+    assert total.calculation.source_field_ids == ["children", "dependents"]
+    assert total.calculation.condition_zero_answers == ["No"]
+    assert total.calculation.condition_skip_answers == ["I'm not sure"]
+    assert total.subquestions[0].helper_text.startswith("A tax credit is an amount")
+
+def test_gemini_increases_token_budget_after_length_finish(monkeypatch):
+    import httpx
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    field = FormField(
+        field_id="classification", original_question="Federal tax classification",
+        source_page=1, source_rect=[], simplification_status="pending",
+    )
+    budgets = []
+
+    async def fake_post(self, url, **kwargs):
+        budgets.append(kwargs["json"]["generationConfig"]["maxOutputTokens"])
+        if len(budgets) == 1:
+            payload = {"candidates": [{
+                "finishReason": "MAX_TOKENS",
+                "content": {"parts": []},
+            }]}
+        else:
+            content = json.dumps({"results": [{
+                "field_id": "classification",
+                "plain_question": "What is your federal tax classification?",
+                "helper_text": None,
+                "subquestions": [],
+                "decision_tree": None,
+                "confidence": "high",
+            }]})
+            payload = {"candidates": [{
+                "finishReason": "STOP",
+                "content": {"parts": [{"text": content}]},
+            }]}
+        return httpx.Response(200, json=payload, request=httpx.Request("POST", url))
+
+    async def no_wait(delay):
+        pass
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    monkeypatch.setattr("app.conversation.asyncio.sleep", no_wait)
+    warnings = asyncio.run(simplify_fields([field]))
+
+    assert warnings == []
+    assert budgets == [4096, 8192]
+    assert field.simplification_status == "complete"
+    assert field.simplified_question == "What is your federal tax classification?"
+
+def test_gemini_failure_falls_back_without_rejecting_upload(monkeypatch, caplog):
+    import httpx
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    field = FormField(
+        field_id="name", original_question="Full legal name", source_page=1, source_rect=[]
+    )
+    attempts = 0
+    delays = []
+
+    async def failing_post(self, url, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise httpx.ConnectError("offline", request=httpx.Request("POST", url))
+
+    async def fake_sleep(delay):
+        delays.append(delay)
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", failing_post)
+    monkeypatch.setattr("app.conversation.asyncio.sleep", fake_sleep)
+    warnings = asyncio.run(simplify_fields([field]))
+
+    assert attempts == 3
+    assert delays == [2.0, 4.0]
+    assert field.simplified_question == "Full legal name"
+    assert field.simplification_status == "failed"
+    assert field.simplification_confidence == "low"
+    assert warnings == ["Gemini could not simplify 1 question."]
+    assert "error_type=ConnectError" in caplog.text
+    assert "field_ids=['name']" in caplog.text
+
+def test_gemini_rate_limit_stays_pending_and_retries_until_success(monkeypatch, caplog):
+    import httpx
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    field = FormField(
+        field_id="address", original_question="Address", source_page=1, source_rect=[],
+        simplification_status="pending",
+    )
+    attempts = 0
+    delays = []
+
+    async def rate_limited_then_success(self, url, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        assert field.simplification_status == "pending"
+        request = httpx.Request("POST", url)
+        if attempts < 3:
+            return httpx.Response(
+                429,
+                json={"error": {"message": "Too many requests"}},
+                request=request,
+            )
+        content = json.dumps({"results": [{
+            "field_id": "address",
+            "plain_question": "What is your home address?",
+            "helper_text": None,
+            "subquestions": [],
+            "calculation": None,
+            "decision_tree": None,
+            "confidence": "high",
+        }]})
+        return httpx.Response(200, json={"candidates": [{
+            "finishReason": "STOP",
+            "content": {"parts": [{"text": content}]},
+        }]}, request=request)
+
+    async def fake_sleep(delay):
+        delays.append(delay)
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", rate_limited_then_success)
+    monkeypatch.setattr("app.conversation.asyncio.sleep", fake_sleep)
+    warnings = asyncio.run(simplify_fields([field]))
+
+    assert attempts == 3
+    assert delays == [30.0, 60.0]
+    assert warnings == []
+    assert field.simplification_status == "complete"
+    assert field.simplified_question == "What is your home address?"
+    assert "keeping questions pending and retrying" in caplog.text
+
+def test_failed_batch_is_retried_as_individual_questions(monkeypatch):
+    from app.conversation import _run_batch
+    from app.models import SimplificationBatch
+    fields = [
+        FormField(
+            field_id=f"field-{index}", original_question=f"Question {index}",
+            source_page=1, source_rect=[], simplification_status="pending",
+        )
+        for index in range(3)
+    ]
+    calls = []
+
+    async def fake_request(client, requested, semaphore):
+        calls.append([field.field_id for field in requested])
+        if len(requested) > 1:
+            return None
+        field = requested[0]
+        return SimplificationBatch.model_validate({"results": [{
+            "field_id": field.field_id,
+            "plain_question": f"Simplified {field.original_question}?",
+            "helper_text": None,
+            "subquestions": [],
+            "decision_tree": None,
+            "confidence": "high",
+        }]})
+
+    monkeypatch.setattr("app.conversation._request_with_retry", fake_request)
+    groups = asyncio.run(_run_batch(None, fields, asyncio.Semaphore(3)))
+
+    assert calls[0] == ["field-0", "field-1", "field-2"]
+    assert calls[1:] == [["field-0"], ["field-1"], ["field-2"]]
+    assert len(groups) == 3
+    assert all(response is not None for _, response in groups)
+
+def test_configured_upload_returns_pending_before_gemini_finishes(monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    started = []
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr("app.main.start_simplification", lambda key: started.append(key))
+
+    with TestClient(app) as client:
+        uploaded = client.post('/sessions', files={'file': ('form.pdf', sample())})
+        assert uploaded.status_code == 200
+        session = uploaded.json()
+        assert session['simplification_status'] == 'pending'
+        assert session['fields'][0]['simplification_status'] == 'pending'
+        assert session['fields'][0]['simplified_question'] == 'Full name'
+        assert started == [session['session_id']]
+        client.delete(f"/sessions/{session['session_id']}")
+
+def test_background_simplification_updates_session(monkeypatch):
+    from app.main import complete_simplification
+    field = FormField(
+        field_id="name", original_question="Full legal name", simplified_question="Full legal name",
+        source_page=1, source_rect=[],
+    )
+    session = Session(
+        session_id="background", filename="form.pdf", mode="gemini",
+        simplification_status="pending", fields=[field],
+    )
+    sessions[session.session_id] = (time.monotonic(), session)
+
+    async def fake_simplify(fields):
+        fields[0].simplified_question = "What is your full legal name?"
+        fields[0].simplification_confidence = "high"
+        return []
+
+    monkeypatch.setattr("app.main.simplify_fields", fake_simplify)
+    asyncio.run(complete_simplification(session.session_id))
+
+    assert session.simplification_status == "complete"
+    assert session.fields[0].simplified_question == "What is your full legal name?"
+    sessions.pop(session.session_id)
 
 def test_answer_mapping():
     fields = extract_fields(sample())
@@ -171,10 +784,27 @@ def test_answer_mapping():
     assert result.fields[0].confirmed
     sessions.pop("test")
 
+def test_choice_answer_must_match_an_original_option():
+    from fastapi import HTTPException
+    field = FormField(
+        field_id="filing", original_question="Filing status", answer_type="choice",
+        options=["Single", "Married filing jointly"], source_page=1, source_rect=[],
+    )
+    sessions["choice"] = (
+        time.monotonic(),
+        Session(session_id="choice", filename="demo.pdf", mode="mock", fields=[field]),
+    )
+    with pytest.raises(HTTPException) as error:
+        answer("choice", "filing", Answer(value="Married", confirmed=True))
+    assert error.value.status_code == 422
+    result = answer("choice", "filing", Answer(value="Married filing jointly", confirmed=True))
+    assert result.fields[0].user_response == "Married filing jointly"
+    sessions.pop("choice")
+
 def test_upload_answer_clear(monkeypatch):
     from fastapi.testclient import TestClient
     from app.main import app
-    monkeypatch.delenv("STEP_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     with TestClient(app) as client:
         uploaded = client.post('/sessions', files={'file': ('demo.pdf', sample(), 'application/pdf')})
         assert uploaded.status_code == 200
@@ -191,7 +821,7 @@ def test_upload_answer_clear(monkeypatch):
 def test_pdf_export(monkeypatch):
     from fastapi.testclient import TestClient
     from app.main import app
-    monkeypatch.delenv('STEP_API_KEY', raising=False)
+    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
     with TestClient(app) as client:
         session = client.post('/sessions', files={'file': ('form.pdf', sample())}).json()
         key = session['session_id']
@@ -209,7 +839,7 @@ def test_pdf_export(monkeypatch):
 def test_nonfillable_pdf_exports_answer_sheet(monkeypatch):
     from fastapi.testclient import TestClient
     from app.main import app
-    monkeypatch.delenv('STEP_API_KEY', raising=False)
+    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
     with TestClient(app) as client:
         session = client.post(
             '/sessions', files={'file': ('regular.pdf', sample_nonfillable_form())}
@@ -235,7 +865,7 @@ def test_docx_export(monkeypatch):
     from fastapi.testclient import TestClient
     from app.main import app
     from app.documents import paragraphs, W
-    monkeypatch.delenv('STEP_API_KEY', raising=False)
+    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
     data = BytesIO()
     with zipfile.ZipFile(data, 'w') as archive:
         archive.writestr('word/document.xml', '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Full name:</w:t></w:r></w:p></w:body></w:document>')
@@ -266,7 +896,7 @@ def test_screenshot_export(monkeypatch):
     from fastapi.testclient import TestClient
     from app.main import app
     from app.models import FormField
-    monkeypatch.delenv('STEP_API_KEY', raising=False)
+    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
     monkeypatch.setattr('app.documents.extract_image_fields', lambda _: [
         FormField(field_id='image:ocr:full-name', original_question='Full name',
                   source_page=1, source_rect=[10, 10, 100, 20], source_kind='ocr',
@@ -295,7 +925,7 @@ def test_multiple_screenshot_upload(monkeypatch):
     from fastapi.testclient import TestClient
     from app.main import app
     from app.models import FormField
-    monkeypatch.delenv('STEP_API_KEY', raising=False)
+    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
     fields = [FormField(
         field_id='image:ocr:name', original_question='Full name', source_page=1,
         source_rect=[10, 10, 100, 20], source_kind='ocr', ocr_confidence=.98,
@@ -316,7 +946,7 @@ def test_multiple_screenshot_upload(monkeypatch):
 def test_pdf_source_preview_and_unconfigured_speech(monkeypatch):
     from fastapi.testclient import TestClient
     from app.main import app
-    monkeypatch.delenv('STEP_API_KEY', raising=False)
+    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
     monkeypatch.delenv('ELEVENLABS_API_KEY', raising=False)
     with TestClient(app) as client:
         session = client.post('/sessions', files={'file': ('form.pdf', sample())}).json()
@@ -333,7 +963,7 @@ def test_elevenlabs_request(monkeypatch):
     import httpx
     from fastapi.testclient import TestClient
     from app.main import app
-    monkeypatch.delenv('STEP_API_KEY', raising=False)
+    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
     monkeypatch.setenv('ELEVENLABS_API_KEY', 'test-key')
     monkeypatch.setenv('ELEVENLABS_VOICE_ID', 'test-voice')
     async def fake_post(self, url, **kwargs):

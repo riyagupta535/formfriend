@@ -4,7 +4,21 @@ import re
 
 import pymupdf
 
-from .models import FormField
+from .models import (
+    CalculationSpec,
+    AnnualAmountSource,
+    EligibilityCondition,
+    EligibilityWorkflow,
+    FormField,
+    PayPeriodCalculationSpec,
+    TableLookupSpec,
+    WageRange,
+    WageTable,
+    WageTableRow,
+    WorksheetExpression,
+    WorksheetInput,
+    WorksheetSpec,
+)
 
 
 @dataclass
@@ -52,6 +66,439 @@ _SUPPORTED_TYPES = {
 }
 _INTERNAL_NAME = re.compile(r"(?:^|\.)(?:f|c)\d+_\d+\[\d+\]$", re.IGNORECASE)
 _NUMBERED_PROMPT = re.compile(r"^(\d+[a-z]?)[.)]?\s+(.+)", re.IGNORECASE)
+_WORKSHEET_PAGE_REFERENCE = re.compile(
+    r"(?:the\s+)?([A-Za-z][A-Za-z 0-9()/-]*?Worksheet)\s+on\s+page\s+(\d+)",
+    re.IGNORECASE,
+)
+
+_W4_WAGE_TABLE_HEADINGS = (
+    "Married Filing Jointly or Qualifying Surviving Spouse",
+    "Single or Married Filing Separately",
+    "Head of Household",
+)
+_W4_WAGE_COLUMNS = tuple(
+    (start, start + 9999) for start in range(0, 120000, 10000)
+)
+
+
+def _money_number(text: str) -> int:
+    return int(re.sub(r"[^0-9]", "", text))
+
+
+def _w4_wage_tables(page: pymupdf.Page) -> list[WageTable]:
+    """Extract the official wage lookup grids from the referenced W-4 page."""
+    heading_rects = []
+    for heading in _W4_WAGE_TABLE_HEADINGS:
+        matches = page.search_for(heading)
+        if not matches:
+            return []
+        heading_rects.append((heading, matches[0]))
+
+    words = page.get_text("words", sort=True)
+    tables: list[WageTable] = []
+    columns = [WageRange(minimum=low, maximum=high) for low, high in _W4_WAGE_COLUMNS]
+    for index, (heading, rect) in enumerate(heading_rects):
+        section_end = (
+            heading_rects[index + 1][1].y0 if index + 1 < len(heading_rects)
+            else page.rect.height
+        )
+        grouped: dict[float, list[tuple]] = defaultdict(list)
+        for word in words:
+            if rect.y1 + 45 <= word[1] < section_end:
+                # A few printed cells sit a fraction of a point off their row baseline.
+                grouped[round(word[1] / 2) * 2].append(word)
+
+        rows: list[WageTableRow] = []
+        for row_words in grouped.values():
+            cells = sorted(row_words, key=lambda word: word[0])
+            value_words = [word for word in cells if word[0] >= 115 and re.fullmatch(r"\$?[\d,]+", word[4])]
+            label_words = [word[4] for word in cells if word[0] < 115]
+            if len(value_words) != len(columns):
+                continue
+            bounds = [_money_number(token) for token in label_words if re.search(r"\d", token)]
+            if not bounds:
+                continue
+            maximum = None if any(token.lower() == "over" for token in label_words) else bounds[-1]
+            rows.append(WageTableRow(
+                minimum=bounds[0],
+                maximum=maximum,
+                values=[_money_number(word[4]) for word in value_words],
+            ))
+        if len(rows) < 10:
+            return []
+        tables.append(WageTable(filing_status=heading, columns=columns, rows=rows))
+    return tables
+
+
+def _attach_table_lookup_workflows(
+    document: pymupdf.Document,
+    fields: list[FormField],
+) -> None:
+    table_fields = [
+        field for field in fields
+        if "appropriate table on page" in f"{field.original_question} {field.source_context}".lower()
+        and "higher paying job" in f"{field.original_question} {field.source_context}".lower()
+        and "lower paying job" in f"{field.original_question} {field.source_context}".lower()
+    ]
+    if not table_fields:
+        return
+    source_page = 5
+    if len(document) < source_page:
+        return
+    tables = _w4_wage_tables(document[source_page - 1])
+    if len(tables) != len(_W4_WAGE_TABLE_HEADINGS):
+        return
+    for field in table_fields:
+        evidence = f"{field.original_question} {field.source_context}".lower()
+        combined = "add the annual wages of the two highest" in evidence
+        field.table_lookup = TableLookupSpec(
+            lookup_id=f"w4-multiple-jobs-{field.field_id}",
+            source_page=source_page,
+            intro_question="Let’s calculate the amount from the wage table for you.",
+            intro_helper_text=(
+                "Answer three questions and Form Friend will find the matching amount. "
+                "You do not need to read the table yourself."
+            ),
+            higher_wage_label=(
+                "What are the combined annual wages from your two highest-paying jobs?"
+                if combined else "What are the annual wages from the higher-paying job?"
+            ),
+            lower_wage_label=(
+                "What are the annual wages from the third job?"
+                if combined else "What are the annual wages from the lower-paying job?"
+            ),
+            tables=tables,
+        )
+
+    sum_field = next(
+        (
+            field for field in fields
+            if "add the amounts from lines 2a and 2b" in
+            f"{field.original_question} {field.source_context}".lower()
+        ),
+        None,
+    )
+    three_job_lookups = [
+        field for field in table_fields
+        if field.source_page == sum_field.source_page
+    ] if sum_field else []
+    if sum_field is not None and len(three_job_lookups) >= 3:
+        # The first lookup is the separate two-job path. The next two are the
+        # amounts the three-job total explicitly tells the user to add.
+        sources = three_job_lookups[-2:]
+        sum_field.calculation = CalculationSpec(
+            operation="add",
+            input_question_indices=[],
+            factor=None,
+            source_question_numbers=[],
+            source_field_ids=[field.field_id for field in sources],
+            condition_question_index=None,
+            condition_answer=None,
+            condition_zero_answers=[],
+            condition_skip_answers=[],
+            condition_failure_message=None,
+        )
+        sum_field.simplified_question = "Let’s add the two wage-table amounts."
+        sum_field.helper_text = (
+            "Form Friend will use the two amounts calculated in the previous questions."
+        )
+        sum_field.simplification_status = "complete"
+        sum_field.simplification_confidence = "high"
+
+        pay_period_field = next(
+            (
+                field for field in fields
+                if field.source_page == sum_field.source_page
+                and "number of pay periods per year" in
+                f"{field.original_question} {field.source_context}".lower()
+            ),
+            None,
+        )
+        final_field = next(
+            (
+                field for field in fields
+                if field.source_page == sum_field.source_page
+                and "divide the annual amount" in
+                f"{field.original_question} {field.source_context}".lower()
+            ),
+            None,
+        )
+        if pay_period_field is not None and final_field is not None:
+            final_field.pay_period_calculation = PayPeriodCalculationSpec(
+                intro_question="Let’s calculate the extra withholding for each paycheck.",
+                intro_helper_text=(
+                    "Form Friend will use your wage-table result and pay frequency to calculate this amount."
+                ),
+                annual_amount_sources=[
+                    AnnualAmountSource(
+                        label="I have two jobs total",
+                        source_field_id=three_job_lookups[0].field_id,
+                    ),
+                    AnnualAmountSource(
+                        label="I have three jobs total",
+                        source_field_id=sum_field.field_id,
+                    ),
+                ],
+                pay_period_field_id=pay_period_field.field_id,
+            )
+            final_field.simplified_question = final_field.pay_period_calculation.intro_question
+            final_field.helper_text = final_field.pay_period_calculation.intro_helper_text
+            final_field.simplification_status = "complete"
+            final_field.simplification_confidence = "high"
+
+
+def _worksheet_expression(
+    operation: str,
+    *operands: WorksheetExpression,
+    input_id: str | None = None,
+    value: float | None = None,
+    choices: dict[str, float] | None = None,
+) -> WorksheetExpression:
+    return WorksheetExpression(
+        operation=operation,
+        input_id=input_id,
+        value=value,
+        operands=list(operands),
+        choices=choices or {},
+    )
+
+
+def _w4_deductions_workflow(page_text: str, page_number: int) -> WorksheetSpec | None:
+    """Build the supported worksheet only when every formula anchor is in the PDF."""
+    compact = re.sub(r"\s+", " ", page_text)
+    required = (
+        "Deductions Worksheet",
+        "Add lines 1a, 1b, and 1c",
+        "Add lines 3a and 3b",
+        "Add lines 6a, 6b, 6c, 6d, and 6e",
+        "multiply line 7 by 94% (0.94)",
+        "Add lines 2, 4, 5, and 14",
+        "enter the result here and in Step 4(b)",
+        "$768,700", "$640,600", "$384,350",
+        "$32,200", "$24,150", "$16,100", "$6,000",
+    )
+    if any(anchor.lower() not in compact.lower() for anchor in required):
+        return None
+
+    ref = lambda name: _worksheet_expression("input", input_id=name)
+    constant = lambda value: _worksheet_expression("constant", value=value)
+    add = lambda *items: _worksheet_expression("add", *items)
+    subtract = lambda left, right: _worksheet_expression("subtract", left, right)
+    multiply = lambda item, factor: _worksheet_expression("multiply", item, constant(factor))
+    maximum = lambda *items: _worksheet_expression("max", *items)
+    if_greater = lambda left, right, yes, no: _worksheet_expression(
+        "if_greater", left, right, yes, no
+    )
+    lookup = lambda name, choices: _worksheet_expression(
+        "lookup", input_id=name, choices=choices
+    )
+
+    line_2 = add(ref("1a"), ref("1b"), ref("1c"))
+    line_4 = add(
+        lookup("3a", {"Yes": 6000, "No": 0}),
+        lookup("3b", {"Yes": 6000, "No": 0}),
+    )
+    line_7 = add(ref("6a"), ref("6b"), ref("6c"), ref("6d"), ref("6e"))
+    line_8b = maximum(subtract(ref("8a"), line_4), constant(0))
+    line_9 = lookup("filing_status", {
+        "Single": 640600,
+        "Married filing jointly or qualifying surviving spouse": 768700,
+        "Head of household": 640600,
+        "Married filing separately": 384350,
+    })
+    line_10 = if_greater(line_9, line_8b, line_7, multiply(line_7, .94))
+    line_11 = lookup("filing_status", {
+        "Single": 16100,
+        "Married filing jointly or qualifying surviving spouse": 32200,
+        "Head of household": 24150,
+        "Married filing separately": 16100,
+    })
+    line_13 = add(line_11, ref("12"))
+    line_14 = if_greater(
+        line_10,
+        line_13,
+        subtract(line_10, line_11),
+        ref("12"),
+    )
+    line_15 = add(line_2, line_4, ref("5"), line_14)
+
+    currency = lambda input_id, question, helper: WorksheetInput(
+        input_id=input_id,
+        question=question,
+        helper_text=helper,
+        answer_type="currency",
+    )
+    inputs = [
+        currency("1a", "What is your estimated amount of qualified tips?", "Enter 0 if this does not apply. The worksheet limits this amount based on income and caps it at $25,000."),
+        currency("1b", "What is your estimated qualified overtime amount?", "Use only the extra half of time-and-a-half compensation. Enter 0 if this does not apply."),
+        currency("1c", "What is your estimated qualified passenger vehicle loan interest?", "Enter eligible interest up to the worksheet limit, or 0 if this does not apply."),
+        WorksheetInput(input_id="3a", question="Will you be age 65 or older before the end of the year?", helper_text="Choose Yes only if the worksheet's income limit also applies to you.", answer_type="choice", options=["Yes", "No"]),
+        WorksheetInput(input_id="3b", question="Will your spouse be age 65 or older and have a Social Security number valid for employment?", helper_text="Choose Yes only if the worksheet's income limit also applies and you are including a spouse.", answer_type="choice", options=["Yes", "No"]),
+        currency("5", "What is your estimated total for income adjustments?", "This may include student loan interest, deductible IRA contributions, educator expenses, alimony paid, and certain other income adjustments. Enter 0 if none apply."),
+        currency("6a", "How much can you claim for medical and dental expenses?", "Include only qualifying expenses above 7.5% of your total income. Enter 0 if none apply."),
+        currency("6b", "How much can you claim for state and local taxes?", "Use the amount allowed by the income and filing-status limits in the worksheet, or enter 0."),
+        currency("6c", "How much eligible home mortgage interest can you claim?", "Use eligible home mortgage interest under the debt limits in the worksheet, or enter 0."),
+        currency("6d", "How much can you claim for charitable gifts?", "Include only qualifying contributions above 0.5% of your total income. Enter 0 if none apply."),
+        currency("6e", "How much can you claim for other itemized deductions?", "Enter other eligible itemized deductions, or 0 if none apply."),
+        currency("8a", "What is your estimated total income?", "This is used only to apply the worksheet's itemized-deduction limitation."),
+        WorksheetInput(input_id="filing_status", question="What filing status will you use?", helper_text="This selects the exact thresholds printed on the worksheet.", answer_type="choice", options=["Single", "Married filing jointly or qualifying surviving spouse", "Head of household", "Married filing separately"]),
+        currency("12", "If you take the standard deduction, how much eligible cash giving will you claim?", "Enter qualifying cash gifts within the worksheet limit, or 0 if this does not apply."),
+    ]
+    return WorksheetSpec(
+        worksheet_id="w4-step-4b-deductions-2026",
+        task_label="DEDUCTIONS",
+        title="Deductions Worksheet",
+        source_page=page_number,
+        result_line="15",
+        intro_question="Would you like help figuring out whether to enter an amount for deductions?",
+        intro_helper_text=(
+            "Deductions can affect how much federal income tax is taken out of your paycheck. "
+            "You can leave this field blank if you don't want to claim additional deductions here."
+        ),
+        source_text=page_text[:15000],
+        inputs=inputs,
+        result_expression=line_15,
+    )
+
+
+def _attach_worksheet_workflows(document: pymupdf.Document, fields: list[FormField]) -> None:
+    dependent_pages: set[int] = set()
+    for field in fields:
+        evidence = f"{field.original_question} {field.source_context}"
+        match = _WORKSHEET_PAGE_REFERENCE.search(evidence)
+        if not match:
+            continue
+        page_number = int(match.group(2))
+        if not 1 <= page_number <= len(document):
+            continue
+        page_text = document[page_number - 1].get_text("text", sort=True)
+        worksheet = _w4_deductions_workflow(page_text, page_number)
+        if worksheet is not None:
+            field.worksheet = worksheet
+            dependent_pages.add(page_number)
+    if dependent_pages:
+        # Worksheet lines are subtasks of the referring field, not separate top-level tasks.
+        fields[:] = [
+            field for field in fields
+            if field.worksheet is not None or field.source_page not in dependent_pages
+        ]
+
+
+def _w4_exemption_workflow(
+    page_text: str,
+    page_number: int,
+    checked_value: str,
+) -> EligibilityWorkflow | None:
+    compact = re.sub(r"\s+", " ", page_text)
+    required = (
+        "Exemption from withholding",
+        "no federal income tax liability in 2025",
+        "expect to have no federal income tax liability in 2026",
+        "line 24 on your 2025 Form 1040",
+        "lines 27a, 28, 29, and 30",
+        "you will have no income tax withheld",
+        "may owe taxes and penalties",
+        "complete Steps 1(a)",
+        "1(b), and 5",
+        "new Form W-4 by February 16, 2027",
+    )
+    if any(anchor.lower() not in compact.lower() for anchor in required):
+        return None
+    return EligibilityWorkflow(
+        workflow_id="w4-exempt-2026",
+        task_label="TAX WITHHOLDING EXEMPTION",
+        source_page=page_number,
+        source_section="Exemption from withholding",
+        intro_question="Let’s check whether you qualify for exemption from federal income tax withholding.",
+        intro_helper_text=(
+            "Exemption means your employer will not withhold federal income tax from your pay. "
+            "Wanting less tax withheld does not by itself make you eligible."
+        ),
+        conditions=[
+            EligibilityCondition(
+                condition_id="no_2025_liability",
+                question="Did you have zero federal income tax liability for 2025?",
+                helper_text=(
+                    "This means the federal income tax you were legally responsible for—not whether "
+                    "you received a refund or had tax taken from your pay."
+                ),
+                yes_label="Yes, I had zero federal income tax liability",
+                no_label="No, I had federal income tax liability",
+                unsure_label="I'm not sure",
+                unsure_help=(
+                    "Look at the total tax and refundable-credit amounts on your 2025 Form 1040 "
+                    "or 1040-SR. You may have had no tax liability if your total tax was zero or "
+                    "was fully offset by the applicable refundable credits. You may also meet this "
+                    "condition if you did not have to file because your income was below the filing threshold."
+                ),
+            ),
+            EligibilityCondition(
+                condition_id="expect_no_2026_liability",
+                question="Do you expect to have zero federal income tax liability for 2026?",
+                helper_text=(
+                    "Answer based on the federal income tax you expect to be legally responsible for "
+                    "in 2026—not whether you expect a refund."
+                ),
+                yes_label="Yes, I expect zero federal income tax liability",
+                no_label="No, I expect federal income tax liability",
+                unsure_label="I'm not sure",
+                unsure_help=(
+                    "Review your expected 2026 income, deductions, and credits before certifying. "
+                    "Leave the exemption box unchecked until you can confirm that your expected "
+                    "federal income tax liability is zero."
+                ),
+            ),
+        ],
+        eligible_explanation=(
+            "Both required conditions are satisfied. If you claim exemption, no federal income tax "
+            "will be withheld from your paycheck. You may owe tax and penalties if this certification "
+            "is incorrect. Follow the form's instructions for claiming exemption and submit a new W-4 for 2027."
+        ),
+        ineligible_explanation=(
+            "You cannot claim exemption because both required conditions must be true. "
+            "Form Friend will leave the exemption box unchecked."
+        ),
+        certification_text=(
+            "I certify that I had no federal income tax liability in 2025 and expect to have no "
+            "federal income tax liability in 2026."
+        ),
+        checked_value=checked_value,
+        source_text=page_text[:15000],
+    )
+
+
+def _attach_eligibility_workflows(
+    document: pymupdf.Document,
+    fields: list[FormField],
+) -> None:
+    checked_values_by_name: dict[str, str] = {}
+    for page in document:
+        for widget in page.widgets() or []:
+            if widget.field_name and widget.field_type == pymupdf.PDF_WIDGET_TYPE_CHECKBOX:
+                checked_values_by_name[widget.field_name] = str(widget.on_state() or "Yes")
+    for field in fields:
+        evidence = f"{field.original_question} {field.source_context}".lower()
+        if (
+            field.answer_type != "checkbox"
+            or "claim exemption from withholding for 2026" not in evidence
+        ):
+            continue
+        page_match = re.search(r"page\s+(\d+)", evidence)
+        if not page_match:
+            continue
+        page_number = int(page_match.group(1))
+        if not 1 <= page_number <= len(document):
+            continue
+        checked_value = next(
+            (checked_values_by_name[name] for name in field.pdf_field_names
+             if name in checked_values_by_name),
+            "Yes",
+        )
+        field.eligibility_workflow = _w4_exemption_workflow(
+            document[page_number - 1].get_text("text", sort=True),
+            page_number,
+            checked_value,
+        )
 
 
 def _clean_tokens(tokens: list[str]) -> str:
@@ -550,10 +997,16 @@ def _extract_fields(data: bytes, warnings: list[str]) -> list[FormField]:
             if text_fields:
                 if len(text_fields) > 100:
                     raise ValueError("Please use a form with 100 fields or fewer for this demo.")
+                _attach_worksheet_workflows(document, text_fields)
+                _attach_eligibility_workflows(document, text_fields)
+                _attach_table_lookup_workflows(document, text_fields)
                 return text_fields
             from .ocr import extract_ocr_fields
             ocr_fields = extract_ocr_fields(document) if any(page.get_images() for page in document) else []
             if ocr_fields:
+                _attach_worksheet_workflows(document, ocr_fields)
+                _attach_eligibility_workflows(document, ocr_fields)
+                _attach_table_lookup_workflows(document, ocr_fields)
                 for field in ocr_fields:
                     field.extraction = 'printed'
                 warnings.append('Scanned pages were read using OCR. Check extracted questions against the page preview.')
@@ -624,6 +1077,10 @@ def _extract_fields(data: bytes, warnings: list[str]) -> list[FormField]:
     fields.sort(key=lambda field: (field.source_page, field.source_rect[1], field.source_rect[0]))
     if len(fields) > 100:
         raise ValueError("Please use a form with 100 fields or fewer for this demo.")
+    with pymupdf.open(stream=data, filetype="pdf") as document:
+        _attach_worksheet_workflows(document, fields)
+        _attach_eligibility_workflows(document, fields)
+        _attach_table_lookup_workflows(document, fields)
     return fields
 
 

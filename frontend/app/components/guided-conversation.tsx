@@ -18,6 +18,27 @@ type NextState = {
 type Learned = { term: string; explanation: string; example: string };
 type Line = { id: number; speaker: "friend" | "you"; text: string };
 
+function typedValue(question: Question, text: string): unknown {
+  const value = text.trim();
+  const normalized = value.toLowerCase();
+  if (question.input_type === "boolean") {
+    if (["yes", "y", "true"].includes(normalized)) return true;
+    if (["no", "n", "false"].includes(normalized)) return false;
+  }
+  if (question.input_type === "number" || question.input_type === "currency") {
+    const number = Number(value.replace(/[$,\s]/g, ""));
+    if (Number.isFinite(number)) return number;
+  }
+  if (question.input_type === "choice") {
+    return question.options.find(option => option.toLowerCase() === normalized) ?? value;
+  }
+  if (question.input_type === "multichoice") {
+    const requested = value.split(",").map(option => option.trim()).filter(Boolean);
+    return requested.map(item => question.options.find(option => option.toLowerCase() === item.toLowerCase()) ?? item);
+  }
+  return value;
+}
+
 /** Calls an /agent endpoint and turns errors into text the agent can act on, instead of throwing. */
 async function tool(path: string, init?: RequestInit) {
   const response = await fetch(`${API}/agent/sessions/${path}`, init);
@@ -38,6 +59,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
   const [typed, setTyped] = useState("");
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(false);
+  const [saving, setSaving] = useState(false);
   const revision = useRef<number | undefined>(undefined);
   const lineId = useRef(0);
   const transcript = useRef<HTMLDivElement>(null);
@@ -102,11 +124,34 @@ function Conversation({ sessionId }: { sessionId: string }) {
     } finally { setStarting(false); }
   }
 
-  function send(event: React.FormEvent) {
+  async function send(event: React.FormEvent) {
     event.preventDefault();
-    if (!typed.trim() || !live) return;
-    conversation.sendUserMessage(typed.trim());
-    setTyped("");
+    if (!typed.trim() || !question || state?.status !== "question") return;
+    setError("");
+    if (live) {
+      conversation.sendUserMessage(typed.trim());
+      setTyped("");
+      return;
+    }
+    setSaving(true);
+    try {
+      const result = await tool(`${sessionId}/answers`, post({
+        question_id: question.id,
+        value: typedValue(question, typed),
+        raw_response: typed.trim(),
+        revision: revision.current,
+      }));
+      if (result.ok) {
+        track(result.body.next);
+        setTyped("");
+      } else {
+        setError(JSON.parse(result.text).error);
+      }
+    } catch {
+      setError("Can’t reach Form Friend. Make sure the backend is running on port 8000.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   const progress = state?.progress ?? {};
@@ -154,16 +199,18 @@ function Conversation({ sessionId }: { sessionId: string }) {
         </aside>
       </div>
       <form className="chat-composer" onSubmit={send}>
+        {state?.status === "question" && <>
+          <label htmlFor="typed-answer" className="sr-only">Type your answer</label>
+          <div className="guide-typed">
+            <input id="typed-answer" value={typed} onChange={event => setTyped(event.target.value)} placeholder="Type your answer here" autoComplete="off" disabled={saving} />
+            <button type="submit" className="button secondary" disabled={!typed.trim() || saving}>{saving ? "Saving…" : "Send"}</button>
+          </div>
+        </>}
         {!live ? <div className="chat-send-row">
           <span className="chat-composer-note">Form Friend will ask to use your microphone.</span>
           <button type="button" className="button primary" disabled={starting || !state || conversation.status === "connecting"} onClick={() => void start()}>
             {starting || conversation.status === "connecting" ? "Starting…" : lines.length ? "Keep going" : "Start talking"}<span aria-hidden="true">●</span></button>
         </div> : <>
-          <label htmlFor="typed-answer" className="sr-only">Type your answer instead</label>
-          <div className="guide-typed">
-            <input id="typed-answer" value={typed} onChange={event => setTyped(event.target.value)} placeholder="Or type your answer here" autoComplete="off" />
-            <button type="submit" className="button secondary" disabled={!typed.trim()}>Send</button>
-          </div>
           <div className="chat-send-row">
             <button type="button" className="chat-back" onClick={() => conversation.setMuted(!conversation.isMuted)}>{conversation.isMuted ? "Turn microphone on" : "Turn microphone off"}</button>
             <button type="button" className="button secondary" onClick={() => conversation.endSession()}>Take a break</button>
