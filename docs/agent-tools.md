@@ -209,3 +209,9 @@ answers are inferred or saved by the resume operation. The hosted agent must
 allow first-message overrides; the creation script enables that setting for new
 agents. Saved answers survive a break for the session lifetime; recent unsaved
 dialogue context is kept only while the guide page stays open.
+
+## Typed conversation validation
+
+Typed replies use the same voice-enabled ElevenLabs session and answer-saving tools as speech. Sending the first typed message while disconnected starts a voice-enabled WebSocket session and requires microphone permission. Once connected, users can speak or type, mute/unmute independently, and keep the same connection and transcript. Typing never starts a text-only mode or saves raw answers directly. No StepFun validation request is made; backend types, options and field rules still run in `save_answer`.
+
+The agent handles relevance checks, explanations and follow-up questions for both inputs. Taking a break ends the connection; resuming refreshes the saved question and recent transcript context without repeating the introduction.
