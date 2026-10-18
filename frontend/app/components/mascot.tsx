@@ -10,8 +10,8 @@ export default function Mascot({
   return (
     <div className={`mascot ${small ? "mascot-small" : ""} ${talking ? "talking" : ""}`}>
       <img
-        src="/images/formfriend-mascot.png"
-        alt="Your soft teal Form Friend, with paper antennae and a glowing golden light in its hands"
+        src="/images/formfriend-mascot-top-hat.png"
+        alt="Your soft teal Forma wearing a navy top hat with a teal band"
         width={1236}
         height={1272}
         draggable={false}

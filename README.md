@@ -1,7 +1,10 @@
-# FormFriend
+# Forma
 
 Local multipage prototype: Next.js/React/TypeScript/Tailwind frontend and
 FastAPI backend.
+
+For setup, architecture, integration status, known limits, and next steps, see
+[the project handoff](docs/HANDOFF.md).
 
 ## Run
 
