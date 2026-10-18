@@ -64,7 +64,7 @@ it('shows typed input while voice is disconnected and saves directly to the back
   vi.stubGlobal('fetch', fetchMock);
   render(<GuidedConversation sessionId="s1" />);
 
-  const input = await screen.findByRole('textbox', { name: 'Type your answer' });
+  const input = await screen.findByLabelText('Type your answer');
   fireEvent.change(input, { target: { value: '2' } });
   fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 
@@ -74,13 +74,15 @@ it('shows typed input while voice is disconnected and saves directly to the back
 
   fireEvent.click(screen.getByRole('button', { name: '← Back' }));
   expect(screen.getByText('How many children under 17?')).toBeTruthy();
-  expect((screen.getByRole('textbox', { name: 'Type your answer' }) as HTMLInputElement).value).toBe('2');
+  expect((screen.getByLabelText('Type your answer') as HTMLInputElement).value).toBe('2');
   expect(screen.getByText('Update this answer, then press Send to continue.')).toBeTruthy();
 });
 
 it('shows deterministic validation errors and stays on the current typed question', async () => {
+  const validationQuestion = { ...question, input_type: 'text', simplified_question: 'What is your Social Security number?' };
+  const validationState = { ...state(0), question: validationQuestion };
   const fetchMock = vi.fn((url: string, _init?: RequestInit) => {
-    if (url.endsWith('/next-question')) return reply(state(0));
+    if (url.endsWith('/next-question')) return reply(validationState);
     if (url.endsWith('/glossary')) return reply({ terms: [] });
     if (url.endsWith('/answers')) return reply(
       { detail: 'Enter a 9-digit Social Security number in the format XXX-XX-XXXX.' }, false, 422,
@@ -90,14 +92,14 @@ it('shows deterministic validation errors and stays on the current typed questio
   vi.stubGlobal('fetch', fetchMock);
   render(<GuidedConversation sessionId="s1" />);
 
-  const input = await screen.findByRole('textbox', { name: 'Type your answer' });
+  const input = await screen.findByLabelText('Type your answer');
   fireEvent.change(input, { target: { value: 'lkj' } });
   fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 
   expect((await screen.findByRole('alert')).textContent).toContain(
     'Enter a 9-digit Social Security number in the format XXX-XX-XXXX.',
   );
-  expect(screen.getByText('How many children under 17?')).toBeTruthy();
+  expect(screen.getByText('What is your Social Security number?')).toBeTruthy();
   expect((input as HTMLInputElement).value).toBe('lkj');
 });
 it('shows choice options as buttons and saves a clicked option', async () => {
@@ -160,6 +162,31 @@ it('shows Gemini subquestions and saves their deterministic calculation', async 
   expect(JSON.parse(init!.body as string)).toEqual({
     question_id: 'kids', value: 4400, raw_response: '4400', revision: 0,
   });
+});
+
+it('shows the existing worksheet workflow instead of a generic textbox', async () => {
+  const worksheetQuestion = {
+    ...question,
+    id: 'deductions',
+    input_type: 'currency',
+    simplified_question: 'Would you like help figuring out whether to enter an amount for deductions?',
+    help_text: 'You can use the worksheet, enter a result you already know, or leave this blank.',
+    worksheet: {
+      worksheet_id: 'w4-deductions', task_label: 'Deductions', title: 'Deductions Worksheet',
+      source_page: 4, result_line: '15', intro_question: 'Would you like help?',
+      intro_helper_text: 'Choose how to continue.',
+      inputs: [{ input_id: 'amount', question: 'What deduction amount applies?', helper_text: null, answer_type: 'currency', options: [] }],
+    },
+  };
+  const worksheetState = { ...state(0), question: worksheetQuestion, prior_answers: {} };
+  vi.stubGlobal('fetch', vi.fn((url: string) => url.endsWith('/glossary') ? reply({ terms: [] }) : reply(worksheetState)));
+  render(<GuidedConversation sessionId="s1" />);
+
+  expect(await screen.findByRole('button', { name: /I already completed the worksheet/ })).toBeTruthy();
+  expect(screen.getByRole('button', { name: /Help me work through the worksheet/ })).toBeTruthy();
+  expect(screen.getByRole('button', { name: /leave this blank/ })).toBeTruthy();
+  expect(screen.queryByLabelText('Type your answer')).toBeNull();
+  expect(screen.getByText(worksheetQuestion.help_text)).toBeTruthy();
 });
 
 it('shows loading instead of original wording until Gemini finishes the current question', async () => {

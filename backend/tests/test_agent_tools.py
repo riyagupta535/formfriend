@@ -5,8 +5,8 @@ import pytest
 import pymupdf
 from fastapi.testclient import TestClient
 from app.main import app, sessions, documents
-from app.agent_models import Validation
-from app.models import CalculationSpec, FormField, Session, SubQuestion
+from app.agent_models import AgentQuestion, AgentState, Validation
+from app.models import CalculationSpec, FormField, Session, SubQuestion, WorksheetSpec
 from app.parser import extract_fields
 
 
@@ -377,3 +377,61 @@ def test_upload_opens_guide_and_syncs_each_question_while_simplification_runs(cl
     assert rejected.json()['detail'] == 'Enter a name using letters, without numbers.'
     assert client.get(f'/agent/sessions/{guided_id}/next-question').json()['revision'] == 0
     assert source.session_id not in sessions
+
+
+def test_old_numeric_result_uses_its_numeric_subquestion_as_the_prompt():
+    from app.agent_tools import next_question
+    field = FormField(
+        field_id='other-income', original_question='Other income amount',
+        simplified_question='Do you expect other income?', answer_type='currency',
+        subquestions=[SubQuestion(
+            text='What is the total amount of other income you expect?',
+            helper_text='Include income that will not have tax withheld.',
+            answer_type='currency',
+        )],
+        source_page=1, source_rect=[],
+    )
+    question = AgentQuestion(
+        id='other-income', original_text=field.original_question,
+        simplified_question=field.simplified_question, input_type='currency',
+    )
+    session = Session(
+        session_id='guided', filename='w4.pdf', mode='gemini', fields=[field],
+        agent_state=AgentState(questions=[question]),
+    )
+
+    result = next_question(session)
+
+    assert result['question']['simplified_question'] == 'What is the total amount of other income you expect?'
+    assert result['question']['help_text'] == 'Include income that will not have tax withheld.'
+    assert result['question']['subquestions'] == []
+
+
+def test_next_question_includes_specialized_workflow_metadata():
+    from app.agent_tools import next_question
+    field = FormField(
+        field_id='deductions', original_question='Deductions amount',
+        simplified_question='Would you like help with deductions?', answer_type='currency',
+        source_page=1, source_rect=[],
+        worksheet=WorksheetSpec.model_validate({
+            'worksheet_id': 'deductions', 'task_label': 'Deductions',
+            'title': 'Deductions Worksheet', 'source_page': 4, 'result_line': '15',
+            'intro_question': 'Would you like help with deductions?',
+            'intro_helper_text': 'Choose how you want to continue.',
+            'source_text': 'Synthetic worksheet',
+            'inputs': [{'input_id': 'amount', 'question': 'What amount applies?',
+                        'answer_type': 'currency', 'options': []}],
+            'result_expression': {'operation': 'input', 'input_id': 'amount'},
+        }),
+    )
+    session = Session(
+        session_id='guided-workflow', filename='w4.pdf', mode='gemini', fields=[field],
+        agent_state=AgentState(questions=[AgentQuestion(
+            id='deductions', original_text=field.original_question,
+            simplified_question=field.simplified_question, input_type='currency',
+        )]),
+    )
+
+    result = next_question(session)
+
+    assert result['question']['worksheet']['worksheet_id'] == 'deductions'

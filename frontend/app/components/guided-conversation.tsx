@@ -6,6 +6,10 @@ import Mascot from "./mascot";
 import { useAgentSpeechMouth } from "../../lib/useAgentSpeechMouth";
 import GuidedCalculation, { type CalculationSpec, type GuidedQuestion } from "./guided-calculation";
 import { chooseDecisionAnswer, currentDecisionNode, type DecisionStep, type DecisionTree } from "./decision-tree";
+import WorksheetWorkflow, { type WorksheetSpec } from "./worksheet-workflow";
+import EligibilityWorkflow, { type EligibilityWorkflowSpec } from "./eligibility-workflow";
+import TableLookupWorkflow, { type TableLookupSpec } from "./table-lookup-workflow";
+import PayPeriodCalculation, { type PayPeriodCalculationSpec } from "./pay-period-calculation";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -13,6 +17,8 @@ type Question = {
   id: string; original_text: string; simplified_question: string; help_text?: string;
   input_type: string; options: string[]; required: boolean;
   subquestions?: GuidedQuestion[]; calculation?: CalculationSpec | null; decision_tree?: DecisionTree | null;
+  worksheet?: WorksheetSpec | null; eligibility_workflow?: EligibilityWorkflowSpec | null;
+  table_lookup?: TableLookupSpec | null; pay_period_calculation?: PayPeriodCalculationSpec | null;
   source_reference?: { page?: number | null; section?: string | null } | null;
 };
 type NextState = {
@@ -64,6 +70,13 @@ async function tool(path: string, init?: RequestInit) {
 }
 
 const post = (body: object): RequestInit => ({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+
+async function appRequest(path: string, init?: RequestInit) {
+  const response = await fetch(`${API}${path}`, init);
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw Error(typeof body.detail === "string" ? body.detail : "That calculation could not be completed.");
+  return body;
+}
 
 function Conversation({ sessionId }: { sessionId: string }) {
   const [state, setState] = useState<NextState | null>(null);
@@ -306,7 +319,8 @@ function Conversation({ sessionId }: { sessionId: string }) {
     ? ["Yes", "No"] : question?.options ?? [];
   const guidedCalculation = !!question?.calculation;
   const guidedDecision = !!question?.decision_tree;
-  const guidedInteraction = guidedCalculation || guidedDecision;
+  const specializedWorkflow = !!(question?.worksheet || question?.eligibility_workflow || question?.table_lookup || question?.pay_period_calculation);
+  const guidedInteraction = guidedCalculation || guidedDecision || specializedWorkflow;
   const decisionNode = question?.decision_tree ? currentDecisionNode(question.decision_tree, decisionPath) : null;
 
   const complete = state?.status === "complete";
@@ -363,10 +377,32 @@ function Conversation({ sessionId }: { sessionId: string }) {
           {question && state?.status === "question" && <div className="chat-message chat-friend-current">
             <div className="chat-message-meta"><span className="chat-speaker">Now answering</span>{reference?.section && <span>{reference.section.toUpperCase()}</span>}</div>
             <h2 aria-live="polite">{question.simplified_question}</h2>
+            {question.help_text && <p className="helper-text">{question.help_text}</p>}
             {question.subquestions?.length && !guidedCalculation && !guidedDecision ? <div className="subquestion-guide">
               <strong>Let’s break it down:</strong>
               <ul>{question.subquestions.map((item, index) => <li key={`${question.id}-sub-${index}`}>{item.text}</li>)}</ul>
             </div> : null}
+            {question.worksheet && <WorksheetWorkflow key={`${question.id}-worksheet`}
+              worksheet={question.worksheet} busy={saving}
+              sourceImageUrl={`${API}/sessions/${sessionId}/fields/${encodeURIComponent(question.id)}/worksheet/source`}
+              onCalculate={async answers => String((await appRequest(
+                `/sessions/${sessionId}/fields/${encodeURIComponent(question.id)}/worksheet`, post({ answers }),
+              )).value)}
+              onComplete={value => value ? void submitAnswer(value) : void skipCurrentQuestion()} />}
+            {question.eligibility_workflow && <EligibilityWorkflow key={`${question.id}-eligibility`}
+              workflow={question.eligibility_workflow} busy={saving}
+              sourceImageUrl={`${API}/sessions/${sessionId}/fields/${encodeURIComponent(question.id)}/eligibility/source`}
+              onComplete={value => value ? void submitAnswer(value) : void skipCurrentQuestion()} />}
+            {question.table_lookup && <TableLookupWorkflow key={`${question.id}-table`}
+              lookup={question.table_lookup} busy={saving}
+              sourceImageUrl={`${API}/sessions/${sessionId}/fields/${encodeURIComponent(question.id)}/table-lookup/source`}
+              onLookup={async input => String((await appRequest(
+                `/sessions/${sessionId}/fields/${encodeURIComponent(question.id)}/table-lookup`, post(input),
+              )).value)}
+              onComplete={value => void submitAnswer(value)} />}
+            {question.pay_period_calculation && <PayPeriodCalculation key={`${question.id}-pay-period`}
+              calculation={question.pay_period_calculation} priorAnswers={state.prior_answers ?? {}}
+              busy={saving} onComplete={value => void submitAnswer(value)} />}
             {guidedCalculation && question.calculation && <GuidedCalculation key={`${question.id}-calculation`}
               questions={question.subquestions ?? []} calculation={question.calculation}
               priorAnswers={state.prior_answers ?? {}} busy={saving}
@@ -398,7 +434,6 @@ function Conversation({ sessionId }: { sessionId: string }) {
               <summary>ⓘ What the form says</summary>
               {reference?.page && <p><strong>From page {reference.page}</strong></p>}
               <blockquote>{question.original_text}</blockquote>
-              {question.help_text && <p>{question.help_text}</p>}
             </details>
           </div>}
           {state?.status === "complete" && <div className="chat-message chat-friend-current"><h2>You’re all done. Great work!</h2><p>Look over your answers before you download your form.</p></div>}
@@ -412,6 +447,8 @@ function Conversation({ sessionId }: { sessionId: string }) {
               setTyped(event.target.value);
               if (live) conversation.sendUserActivity();
             }} placeholder={live ? "Speak or type here—same conversation" : "Type your answer here"} autoComplete="off"
+              type={!live && (question?.input_type === "number" || question?.input_type === "currency") ? "number" : "text"}
+              inputMode={question?.input_type === "number" || question?.input_type === "currency" ? "decimal" : undefined}
               disabled={starting || conversation.status === "connecting"} />
             <button type="submit" className="button secondary" disabled={!typed.trim() || starting || conversation.status === "connecting"}>Send</button>
           </div>

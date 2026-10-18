@@ -563,6 +563,38 @@ def test_llm_child_credit_calculation_is_validated_and_applied():
     assert [item.answer_type for item in field.subquestions] == ["choice", "number"]
     assert "$400,000" in field.subquestions[0].text
 
+def test_llm_rejects_yes_no_guidance_for_a_direct_currency_field():
+    from app.conversation import _validate_batch
+    from app.models import SimplificationBatch
+    field = FormField(
+        field_id="other-income",
+        original_question="Other income not from jobs. Enter the total amount.",
+        answer_type="currency",
+        source_page=1,
+        source_rect=[],
+    )
+    response = SimplificationBatch.model_validate({"results": [{
+        "field_id": "other-income",
+        "plain_question": "Do you expect to have other income this year?",
+        "helper_text": None,
+        "validation": validation("decimal_number"),
+        "subquestions": [{
+            "text": "What is the total amount of this other income?",
+            "answer_type": "currency",
+            "options": [],
+        }],
+        "calculation": None,
+        "decision_tree": None,
+        "confidence": "high",
+    }]})
+
+    with pytest.raises(ValueError, match="cannot contain subquestions"):
+        _validate_batch(response, [field])
+
+    response.results[0].subquestions = []
+    with pytest.raises(ValueError, match="cannot use a yes/no"):
+        _validate_batch(response, [field])
+
 def test_llm_other_dependent_calculation_is_validated_and_applied():
     from app.conversation import _apply_response, _validate_batch
     from app.models import SimplificationBatch

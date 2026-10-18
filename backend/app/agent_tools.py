@@ -215,6 +215,12 @@ def sync_source_simplifications(session):
             target.subquestions = [item.model_copy(deep=True) for item in source_field.subquestions]
             target.calculation = source_field.calculation.model_copy(deep=True) if source_field.calculation else None
             target.decision_tree = source_field.decision_tree.model_copy(deep=True) if source_field.decision_tree else None
+            target.worksheet = source_field.worksheet.model_copy(deep=True) if source_field.worksheet else None
+            target.table_lookup = source_field.table_lookup.model_copy(deep=True) if source_field.table_lookup else None
+            target.pay_period_calculation = (source_field.pay_period_calculation.model_copy(deep=True)
+                                             if source_field.pay_period_calculation else None)
+            target.eligibility_workflow = (source_field.eligibility_workflow.model_copy(deep=True)
+                                           if source_field.eligibility_workflow else None)
             target.validation = source_field.validation.model_copy(deep=True)
             target.simplification_status = 'complete'
             target.simplification_confidence = source_field.simplification_confidence
@@ -240,10 +246,32 @@ def next_question(session):
     question_payload = question.model_dump() if question else None
     if question is not None:
         field = fields[question.id]
+        subquestions = [item.model_dump() for item in field.subquestions]
+        simplified_question = question.simplified_question
+        help_text = question.help_text
+        # Repair older cached/session results whose headline asks yes/no while the
+        # actual form field needs an amount. Present the numeric question directly.
+        if (question.input_type in {'number', 'currency'} and field.calculation is None
+                and not (field.worksheet or field.table_lookup or field.pay_period_calculation
+                         or field.eligibility_workflow)):
+            numeric = next((item for item in field.subquestions
+                            if item.answer_type in {'number', 'currency'}), None)
+            if numeric is not None:
+                simplified_question = strip_form_reference(numeric.text)
+                help_text = numeric.helper_text or help_text
+                subquestions = []
         question_payload.update({
-            'subquestions': [item.model_dump() for item in field.subquestions],
+            'simplified_question': simplified_question,
+            'help_text': help_text,
+            'subquestions': subquestions,
             'calculation': field.calculation.model_dump() if field.calculation else None,
             'decision_tree': field.decision_tree.model_dump() if field.decision_tree else None,
+            'worksheet': field.worksheet.model_dump() if field.worksheet else None,
+            'table_lookup': field.table_lookup.model_dump() if field.table_lookup else None,
+            'pay_period_calculation': (field.pay_period_calculation.model_dump()
+                                       if field.pay_period_calculation else None),
+            'eligibility_workflow': (field.eligibility_workflow.model_dump()
+                                     if field.eligibility_workflow else None),
         })
     return {
         'session_id': session.session_id,
@@ -385,6 +413,19 @@ async def create_agent_session_from_upload(body: FromUploadRequest):
         raise HTTPException(422, 'This form could not be turned into guided questions.') from None
     created = await create_agent_session(request)
     guided = get_session(created['session_id'])
+    # Printed fields and screenshots do not have native PDF widget names, so the
+    # generic agent-session constructor cannot map their richer workflow metadata.
+    # The from-upload path has an exact positional mapping and can preserve it.
+    for target, original in zip(guided.fields, source.fields):
+        target.subquestions = [item.model_copy(deep=True) for item in original.subquestions]
+        target.calculation = original.calculation.model_copy(deep=True) if original.calculation else None
+        target.decision_tree = original.decision_tree.model_copy(deep=True) if original.decision_tree else None
+        target.worksheet = original.worksheet.model_copy(deep=True) if original.worksheet else None
+        target.table_lookup = original.table_lookup.model_copy(deep=True) if original.table_lookup else None
+        target.pay_period_calculation = (original.pay_period_calculation.model_copy(deep=True)
+                                         if original.pay_period_calculation else None)
+        target.eligibility_workflow = (original.eligibility_workflow.model_copy(deep=True)
+                                       if original.eligibility_workflow else None)
     if source.simplification_status in {'pending', 'running'}:
         guided.agent_state.source_simplification_session_id = source.session_id
     else:

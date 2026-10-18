@@ -3,6 +3,7 @@ from collections.abc import Iterable
 import json
 import logging
 import os
+import re
 
 import httpx
 from pydantic import ValidationError
@@ -86,6 +87,8 @@ Rules:
 - Preserve eligibility and applicability conditions in node helper_text. Use at most 3 questions along any path.
 - Never create, rewrite, merge, or omit a terminal option. terminal_option must exactly match a supplied option.
 - For non-choice fields, plain_question must still request the value that belongs in that exact form field. Use helper_text and subquestions to explain applicability; do not replace a code or name field with a yes/no answer that cannot be written back to the field.
+- For number and currency fields without a supported calculation, ask directly for the numeric amount in plain_question and return no subquestions. Never use a yes/no plain_question for a numeric field. If the amount may not apply, explain in helper_text that the user may enter zero or skip when the source permits it.
+- A yes/no applicability question for a number or currency field is allowed only as condition_question_index inside a calculation that also collects or derives the numeric result.
 - Do not mention printed line numbers, step numbers, or field coordinates in plain_question, helper_text, subquestions, or decision-tree wording. Ask for the underlying information in everyday language instead. Keep source references only in calculation metadata so the application can reuse prior answers internally.
 - Never begin user-facing wording with a printed label such as "1", "3a", "4(b)", "(b)", "Line 2", or "Step 4(b)". Those labels belong only in source metadata.
 - If simplifying could change the meaning, stay close to the original and use low confidence.
@@ -348,6 +351,15 @@ def _validate_batch(batch: SimplificationBatch, fields: list[FormField]) -> None
             raise ValueError("Gemini added length limits to a non-text field.")
         tree = result.decision_tree
         calculation = result.calculation
+        if source.answer_type in {"number", "currency"} and calculation is None:
+            if result.subquestions:
+                raise ValueError("A numeric field without a calculation cannot contain subquestions.")
+            if re.match(
+                r"^(?:do|does|did|are|is|was|were|will|would|can|could|should|have|has|had)\b",
+                result.plain_question.strip(),
+                re.IGNORECASE,
+            ):
+                raise ValueError("A numeric field cannot use a yes/no plain question.")
         if calculation is not None:
             if tree is not None:
                 raise ValueError("A field cannot contain both a calculation and a decision tree.")
