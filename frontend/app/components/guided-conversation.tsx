@@ -17,6 +17,7 @@ type NextState = {
 };
 type Learned = { term: string; explanation: string; example: string };
 type Line = { id: number; speaker: "friend" | "you"; text: string };
+type HistoryEntry = { question: Question; answer: string };
 
 function typedValue(question: Question, text: string): unknown {
   const value = text.trim();
@@ -61,7 +62,10 @@ function Conversation({ sessionId }: { sessionId: string }) {
   const [starting, setStarting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [hasStarted, setHasStarted] = useState(false);
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [editingPrevious, setEditingPrevious] = useState(false);
   const revision = useRef<number | undefined>(undefined);
+  const latestState = useRef<NextState | null>(null);
   const lineId = useRef(0);
   const transcript = useRef<HTMLDivElement>(null);
 
@@ -75,7 +79,24 @@ function Conversation({ sessionId }: { sessionId: string }) {
   });
   const live = conversation.status === "connected";
 
-  function track(next: NextState) { revision.current = next.revision; setState(next); }
+  function track(next: NextState) { revision.current = next.revision; latestState.current = next; setState(next); }
+
+  function remember(question: Question | null | undefined, answer: string) {
+    if (!question || editingPrevious) return;
+    setHistory(current => [...current, { question, answer }]);
+  }
+
+  function goBack() {
+    const previous = history.at(-1);
+    const current = latestState.current;
+    if (!previous || !current) return;
+    if (live) conversation.endSession();
+    setHistory(items => items.slice(0, -1));
+    setState({ ...current, status: "question", question: previous.question });
+    setTyped(previous.answer);
+    setEditingPrevious(true);
+    setError("");
+  }
 
   // Load the first question so it is visible before the conversation starts, and for the glossary.
   useEffect(() => {
@@ -96,12 +117,18 @@ function Conversation({ sessionId }: { sessionId: string }) {
     try { value = JSON.parse(raw); } catch { value = raw; } // Unquoted free text is still text.
     const result = await tool(`${sessionId}/answers`, post({
       question_id: params.question_id, value, raw_response: String(params.raw_response ?? ""), revision: revision.current }));
-    if (result.ok) track(result.body.next);
+    if (result.ok) {
+      remember(state?.question, String(params.raw_response ?? params.value_json ?? ""));
+      track(result.body.next);
+    }
     return result.text;
   });
   useConversationClientTool("skip_question", async (params: Record<string, unknown>) => {
     const result = await tool(`${sessionId}/skip`, post({ question_id: params.question_id, revision: revision.current }));
-    if (result.ok) track(result.body.next);
+    if (result.ok) {
+      remember(state?.question, "");
+      track(result.body.next);
+    }
     return result.text;
   });
   useConversationClientTool("get_question_context", async (params: Record<string, unknown>) =>
@@ -147,7 +174,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
     event.preventDefault();
     if (!typed.trim() || !question || state?.status !== "question") return;
     setError("");
-    if (live) {
+    if (live && !editingPrevious) {
       conversation.sendUserMessage(typed.trim());
       setTyped("");
       return;
@@ -161,8 +188,10 @@ function Conversation({ sessionId }: { sessionId: string }) {
         revision: revision.current,
       }));
       if (result.ok) {
+        remember(question, typed.trim());
         track(result.body.next);
         setTyped("");
+        setEditingPrevious(false);
       } else {
         setError(JSON.parse(result.text).error);
       }
@@ -225,16 +254,19 @@ function Conversation({ sessionId }: { sessionId: string }) {
             <button type="submit" className="button secondary" disabled={!typed.trim() || saving}>{saving ? "Saving…" : "Send"}</button>
           </div>
         </>}
-        {!live ? <div className="chat-send-row">
+        {!live && !editingPrevious ? <div className="chat-send-row">
           <span className="chat-composer-note">Form Friend will ask to use your microphone.</span>
           <button type="button" className="button primary" disabled={starting || !state || conversation.status === "connecting"} onClick={() => void start()}>
             {starting || conversation.status === "connecting" ? "Starting…" : hasStarted || (state?.revision ?? 0) > 0 ? "Keep going" : "Start talking"}<span aria-hidden="true">●</span></button>
-        </div> : <>
+        </div> : live && !editingPrevious ? <>
           <div className="chat-send-row">
             <button type="button" className="chat-back" onClick={() => conversation.setMuted(!conversation.isMuted)}>{conversation.isMuted ? "Turn microphone on" : "Turn microphone off"}</button>
             <button type="button" className="button secondary" onClick={() => conversation.endSession()}>Take a break</button>
           </div>
-        </>}
+        </> : editingPrevious ? <p className="chat-composer-note">Update this answer, then press Send to continue.</p> : null}
+        {history.length > 0 && <div className="chat-send-row">
+          <button type="button" className="chat-back" disabled={saving} onClick={goBack}>← Back</button>
+        </div>}
       </form>
     </div>
     {error && <div className="error-message" role="alert">{error}</div>}

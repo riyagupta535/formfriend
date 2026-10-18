@@ -71,6 +71,11 @@ it('shows typed input while voice is disconnected and saves directly to the back
   await waitFor(() => expect(screen.getByRole('link', { name: /Review my answers/ })).toBeTruthy());
   const [, init] = fetchMock.mock.calls.find(([url]) => url.endsWith('/answers'))!;
   expect(JSON.parse(init!.body as string)).toEqual({ question_id: 'kids', value: 2, raw_response: '2', revision: 0 });
+
+  fireEvent.click(screen.getByRole('button', { name: '← Back' }));
+  expect(screen.getByText('How many children under 17?')).toBeTruthy();
+  expect((screen.getByRole('textbox', { name: 'Type your answer' }) as HTMLInputElement).value).toBe('2');
+  expect(screen.getByText('Update this answer, then press Send to continue.')).toBeTruthy();
 });
 
 it('uses the introduction once and resumes at the latest question after a break',async()=>{

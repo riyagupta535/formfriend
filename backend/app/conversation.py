@@ -8,6 +8,7 @@ import httpx
 from pydantic import ValidationError
 
 from .models import FormField, SimplificationBatch
+from .text_utils import strip_form_reference
 
 
 BATCH_SIZE = 1
@@ -64,6 +65,7 @@ Rules:
 - Never create, rewrite, merge, or omit a terminal option. terminal_option must exactly match a supplied option.
 - For non-choice fields, plain_question must still request the value that belongs in that exact form field. Use helper_text and subquestions to explain applicability; do not replace a code or name field with a yes/no answer that cannot be written back to the field.
 - Do not mention printed line numbers, step numbers, or field coordinates in plain_question, helper_text, subquestions, or decision-tree wording. Ask for the underlying information in everyday language instead. Keep source references only in calculation metadata so the application can reuse prior answers internally.
+- Never begin user-facing wording with a printed label such as "1", "3a", "4(b)", "(b)", "Line 2", or "Step 4(b)". Those labels belong only in source metadata.
 - If simplifying could change the meaning, stay close to the original and use low confidence.
 - Return exactly one result for each input field_id and never invent an ID.
 - If worksheet_dependency is present, the application already extracted and validates that worksheet. Introduce the task in plain language; do not recreate its formulas or ask for its final amount as if the user already completed it.
@@ -548,7 +550,9 @@ def _apply_response(
     for field in source_fields:
         result = results[field.field_id]
         workflow = field.worksheet or field.eligibility_workflow or field.table_lookup or field.pay_period_calculation
-        field.simplified_question = workflow.intro_question if workflow else result.plain_question
+        field.simplified_question = strip_form_reference(
+            workflow.intro_question if workflow else result.plain_question
+        )
         field.helper_text = workflow.intro_helper_text if workflow else result.helper_text
         field.subquestions = result.subquestions
         field.calculation = result.calculation
@@ -602,7 +606,7 @@ async def simplify_fields(fields: list[FormField]) -> list[str]:
         for field in fields:
             workflow = field.worksheet or field.eligibility_workflow or field.table_lookup or field.pay_period_calculation
             sourced_calculation = bool(field.calculation and field.calculation.source_field_ids)
-            field.simplified_question = (
+            field.simplified_question = strip_form_reference(
                 workflow.intro_question
                 if workflow else field.simplified_question
                 if sourced_calculation else f"Please tell me: {field.original_question}"
@@ -621,7 +625,7 @@ async def simplify_fields(fields: list[FormField]) -> list[str]:
         sourced_calculation = bool(field.calculation and field.calculation.source_field_ids)
         if workflow or sourced_calculation:
             if workflow:
-                field.simplified_question = workflow.intro_question
+                field.simplified_question = strip_form_reference(workflow.intro_question)
                 field.helper_text = workflow.intro_helper_text
             field.subquestions = []
             if workflow:

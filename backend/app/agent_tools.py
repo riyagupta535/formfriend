@@ -16,6 +16,7 @@ from pydantic import ValidationError
 from .agent_models import (AgentSessionRequest, AgentState, ExplainRequest, FromUploadRequest, GlossaryEntry,
                            SaveAgentAnswer, SkipAgentQuestion)
 from .models import FormField, Session
+from .text_utils import strip_form_reference
 
 
 def authorize(authorization: str | None = Header(default=None)):
@@ -264,7 +265,9 @@ def questions_from_fields(session):
         used_ids.add(key)
         original = field.original_question.strip() or field.field_id
         # Mock simplification only adds "Please tell me:"; the agent rephrases questions itself.
-        simplified = original if session.mode == 'mock' else (field.simplified_question.strip() or original)
+        simplified = strip_form_reference(
+            original if session.mode == 'mock' else (field.simplified_question.strip() or original)
+        )
         input_type = 'boolean' if field.answer_type == 'checkbox' else field.answer_type
         unique_name = next((name for name in field.pdf_field_names if name_counts[name] == 1), None)
         questions.append({
