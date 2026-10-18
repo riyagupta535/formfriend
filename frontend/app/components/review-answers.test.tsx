@@ -82,3 +82,17 @@ it('keeps edits after an export failure so it can be retried',async()=>{
   expect((screen.getByLabelText(/Full name/) as HTMLTextAreaElement).value).toBe('Keep this edit');
   await waitFor(()=>expect((screen.getByRole('button',{name:'Download PDF'}) as HTMLButtonElement).disabled).toBe(false));
 });
+
+it('reviews Spanish question and choice labels while retaining canonical export values', () => {
+  render(<ReviewAnswers session={{ ...session, language: 'es', fields: [{
+    field_id: 'status', original_question: 'Filing status', simplified_question: '¿Cuál es tu estado civil?',
+    source_page: 1, user_response: 'Single', answer_type: 'choice', options: ['Single', 'Married'],
+    option_labels: { Single: 'Soltero', Married: 'Casado' },
+  }] }} onClear={vi.fn()} />);
+  const input = screen.getByRole('combobox', { name: /¿Cuál es tu estado civil/ }) as HTMLSelectElement;
+  expect(input.value).toBe('Single');
+  expect(screen.getByRole('option', { name: 'Soltero' }).getAttribute('value')).toBe('Single');
+  fireEvent.change(input, { target: { value: 'Married' } });
+  expect(input.value).toBe('Married');
+  expect(screen.getByRole('button', { name: /Download PDF/ })).toBeTruthy();
+});

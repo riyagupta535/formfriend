@@ -3,12 +3,14 @@ import Link from "next/link";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import AnswerInput, { type AnswerField } from "./answer-input";
 import Mascot from "./mascot";
+import { QUESTION_LANGUAGES, type QuestionLanguage } from "../../lib/question-languages";
 
 type ReviewField = AnswerField & {
   field_id: string; original_question: string; simplified_question: string;
   source_page: number; user_response: string | null;
 };
 type ReviewSession = {
+  language?: QuestionLanguage;
   session_id: string; filename: string; document_type?: string;
   pdf_has_answer_sheet?: boolean; fields: ReviewField[];
 };
@@ -85,8 +87,8 @@ export default function ReviewAnswers({ session, onClear }: {session: ReviewSess
       <section className="review-card" aria-label="Review all answers" aria-busy={busy}>
         <div className="review-title"><h2>Your answers</h2><span>{session.fields.length - missing} / {session.fields.length} answered</span></div>
         <div className="review-fields" role="region" aria-label="Form answers" tabIndex={0}>
-          {session.fields.map((field, index) => <div className="review-field" key={field.field_id}>
-            <label id={`review-${index}-label`} htmlFor={`review-${index}`}><span>{index + 1}</span>{reviewQuestion(field.original_question)}</label>
+          {session.fields.map((field, index) => <div className="review-field" lang={QUESTION_LANGUAGES[session.language ?? "en"].htmlLang} dir={session.language === "ar" ? "rtl" : "ltr"} key={field.field_id}>
+            <label id={`review-${index}-label`} htmlFor={`review-${index}`}><span>{index + 1}</span>{reviewQuestion(session.language && session.language !== "en" ? field.simplified_question || field.original_question : field.original_question)}</label>
             <AnswerInput id={`review-${index}`} field={field} value={values[field.field_id]} onChange={value => edit(field.field_id, value)} disabled={busy}/>
             {!values[field.field_id]?.trim() && <small>No answer provided</small>}
           </div>)}

@@ -469,3 +469,80 @@ it('offers date entry during voice and tells the agent how to handle spoken date
  fireEvent.change(date,{target:{value:'2000-01-02'}});fireEvent.click(screen.getByRole('button',{name:'Use this date'}));
  expect(calls.send).toHaveBeenCalledWith('2000-01-02');expect(calls.start).not.toHaveBeenCalled();
 });
+
+it('shows Spanish choice labels but saves the original form option', async () => {
+  const spanishQuestion = { ...question, id: 'status', input_type: 'choice',
+    simplified_question: '¿Cuál es tu estado civil?', options: ['Single', 'Married'],
+    option_labels: { Single: 'Soltero', Married: 'Casado' } };
+  const fetchMock = vi.fn((url: string) => {
+    if (url.endsWith('/next-question')) return reply({ ...state(0), language: 'es', question: spanishQuestion });
+    if (url.endsWith('/glossary')) return reply({ terms: [] });
+    if (url.endsWith('/answers')) return reply({ saved: true, next: { ...state(1, 'complete'), language: 'es' } });
+    return reply({ fields: [] });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  render(<GuidedConversation sessionId="s1" />);
+  fireEvent.click(await screen.findByRole('button', { name: /Soltero/ }));
+  await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url.endsWith('/answers'))).toBe(true));
+  const save = fetchMock.mock.calls.find(([url]) => url.endsWith('/answers'))!;
+  expect(JSON.parse((save as unknown as [string, RequestInit])[1].body as string).value).toBe('Single');
+  expect(screen.getByRole('heading', { name: 'Let’s talk it through.' })).toBeTruthy();
+});
+
+it('uses a Spanish greeting and language override for the voice session', async () => {
+  vi.stubGlobal('fetch', vi.fn((url: string) => url.endsWith('/agent-session') ? reply({ signed_url: 'wss://synthetic' })
+    : url.endsWith('/next-question') ? reply({ ...state(0), language: 'es', question: { ...question, simplified_question: '¿Cuántos hijos menores de 17 años tienes?' } })
+    : url.endsWith('/glossary') ? reply({ terms: [] }) : reply({ fields: [] })));
+  render(<GuidedConversation sessionId="s1" />);
+  await screen.findByText('¿Cuántos hijos menores de 17 años tienes?');
+  fireEvent.click(screen.getByRole('button', { name: /Start talking/ }));
+  await waitFor(() => expect(calls.start).toHaveBeenCalled());
+  const agent = calls.start.mock.calls[0][0].overrides.agent;
+  expect(agent.language).toBe('es');
+  expect(agent.firstMessage).toContain('Hola, soy Fomy');
+  expect(calls.context.mock.calls.some(([text]) => text.includes('clear, neutral Spanish'))).toBe(true);
+});
+
+it('accepts a typed Spanish yes as a canonical boolean', async () => {
+  const fetchMock = vi.fn((url: string, _init?: RequestInit) => url.endsWith('/next-question')
+    ? reply({ ...state(0), language: 'es', question: { ...question, input_type: 'boolean', simplified_question: '¿Tienes otro trabajo?', option_labels: { Yes: 'Sí', No: 'No' } } })
+    : url.endsWith('/answers') ? reply({ saved: true, next: { ...state(1, 'complete'), language: 'es' } })
+    : url.endsWith('/glossary') ? reply({ terms: [] }) : reply({ fields: [] }));
+  vi.stubGlobal('fetch', fetchMock);
+  render(<GuidedConversation sessionId="s1" />);
+  const input = await screen.findByLabelText('Type your answer');
+  fireEvent.change(input, { target: { value: 'sí' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+  await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url.endsWith('/answers'))).toBe(true));
+  expect(JSON.parse(fetchMock.mock.calls.find(([url]) => url.endsWith('/answers'))![1]!.body as string).value).toBe(true);
+});
+
+it.each(['zh', 'fil', 'vi', 'ar', 'fr', 'ko', 'pt', 'hi'])('starts a %s voice conversation and keeps its language after a break', async code => {
+  vi.stubGlobal('fetch', vi.fn((url: string) => url.endsWith('/agent-session') ? reply({ signed_url: 'wss://synthetic' })
+    : url.endsWith('/next-question') ? reply({ ...state(0), language: code, question: { ...question, simplified_question: 'Localized question' } })
+    : url.endsWith('/glossary') ? reply({ terms: [] }) : reply({ fields: [] })));
+  const view = render(<GuidedConversation sessionId="s1" />);
+  await screen.findByText('Localized question');
+  fireEvent.click(screen.getByRole('button', { name: /Start talking/ }));
+  await waitFor(() => expect(calls.start).toHaveBeenCalledTimes(1));
+  const voiceCode = code === 'fil' ? 'tl' : code === 'pt' ? 'pt-br' : code;
+  expect(calls.start.mock.calls[0][0].overrides.agent.language).toBe(voiceCode);
+  expect(calls.start.mock.calls[0][0].overrides.agent.firstMessage).not.toContain('Hi, I’m Fomy');
+  expect(view.container.querySelector('.guide-bubble')?.getAttribute('dir')).toBe(code === 'ar' ? 'rtl' : 'ltr');
+  fireEvent.click(screen.getByRole('button', { name: /Keep going/ }));
+  await waitFor(() => expect(calls.start).toHaveBeenCalledTimes(2));
+  expect(calls.start.mock.calls[1][0].overrides.agent).toEqual({ firstMessage: 'Localized question', language: voiceCode });
+});
+
+it.each([['zh', '是'], ['ar', 'نعم'], ['ko', '예'], ['hi', 'हाँ']])('saves a typed %s yes as a boolean', async (code, yes) => {
+  const fetchMock = vi.fn((url: string, _init?: RequestInit) => url.endsWith('/next-question')
+    ? reply({ ...state(0), language: code, question: { ...question, input_type: 'boolean', simplified_question: 'Localized question', option_labels: { Yes: yes, No: 'Localized no' } } })
+    : url.endsWith('/answers') ? reply({ saved: true, next: { ...state(1, 'complete'), language: code } })
+    : url.endsWith('/glossary') ? reply({ terms: [] }) : reply({ fields: [] }));
+  vi.stubGlobal('fetch', fetchMock);
+  render(<GuidedConversation sessionId="s1" />);
+  fireEvent.change(await screen.findByLabelText('Type your answer'), { target: { value: yes } });
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+  await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url.endsWith('/answers'))).toBe(true));
+  expect(JSON.parse(fetchMock.mock.calls.find(([url]) => url.endsWith('/answers'))![1]!.body as string).value).toBe(true);
+});

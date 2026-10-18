@@ -7,12 +7,13 @@ from uuid import uuid4
 from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from urllib.parse import quote
 from .documents import extract_docx, extract_image, extract_images, export_document
-from .models import Answer, Session, TableLookupRequest, WorksheetAnswers, WorksheetResult
+from .languages import QuestionLanguage, LANGUAGE_NAMES
+from .models import Answer, LanguageSelection, Session, TableLookupRequest, WorksheetAnswers, WorksheetResult
 from .parser import extract_pdf
 from .conversation import mode, simplify, simplify_fields
 from .worksheets import calculate_worksheet
@@ -106,7 +107,8 @@ def health():
 
 @app.post("/sessions", response_model=Session)
 async def upload(file: UploadFile | None = File(default=None),
-                 files: list[UploadFile] | None = File(default=None)):
+                 files: list[UploadFile] | None = File(default=None),
+                 language: QuestionLanguage = Form(default='en')):
     prune()
     if len(sessions) >= 50:
         raise HTTPException(503, "Demo is busy. Please try again shortly.")
@@ -203,7 +205,7 @@ async def upload(file: UploadFile | None = File(default=None),
     if len(uploads) > 1:
         filename = f"{filename} + {len(uploads) - 1} screenshot{'s' if len(uploads) > 2 else ''}"
     session = Session(session_id=uuid4().hex, filename=filename, document_type=document_type,
-                      mode=active_mode,
+                      mode=active_mode, language=language,
                       simplification_status="complete" if active_mode == "mock" or legacy_remaining is not None else "pending",
                       fields=fields,
                       pdf_has_answer_sheet=any(f.extraction == "printed" for f in fields),
@@ -219,8 +221,33 @@ def retrieve(key: str):
     session = get_session(key)
     if session.agent_state:
         from .agent_tools import visible_fields
-        return session.model_copy(update={"fields": visible_fields(session)})
+        fields = visible_fields(session)
+        if session.language != 'en':
+            localized = []
+            for field in fields:
+                cached = session._question_presentations.get(field.field_id)
+                question = cached[1] if cached else {}
+                localized.append(field.model_copy(update={
+                    'simplified_question': question.get('simplified_question', field.simplified_question),
+                    'option_labels': question.get('option_labels', {}),
+                }))
+            fields = localized
+        return session.model_copy(update={"fields": fields})
     return session
+
+@app.post('/sessions/{key}/language')
+def choose_language(key: str, body: LanguageSelection):
+    session = get_session(key)
+    if ((session.agent_state and session.agent_state.revision > 0)
+            or any(field.status in {'answered', 'skipped'} for field in session.fields)):
+        raise HTTPException(409, 'Choose your question language before starting the form conversation.')
+    if session.language != body.language:
+        session.language = body.language
+        session._question_presentations.clear()
+        if session.agent_state:
+            session.agent_state.glossary.clear()
+    return {'session_id': key, 'language': session.language}
+
 
 @app.get("/sessions/{key}/export")
 async def export(key: str):
@@ -316,7 +343,13 @@ async def speech(
             raise HTTPException(404, "Eligibility explanation not found.")
     # Retain the session endpoint for compatibility; both UIs share the branch's provider logic.
     from .voice import SpeechRequest, speech as create_speech
-    return await create_speech(SpeechRequest(text=speech_text))
+    if session.language != 'en':
+        from .languages import translate_strings
+        try:
+            speech_text = (await translate_strings([speech_text], session.language))[speech_text]
+        except Exception:
+            raise HTTPException(503, f'{LANGUAGE_NAMES[session.language]} audio is unavailable right now. Please read the question or try again.') from None
+    return await create_speech(SpeechRequest(text=speech_text, language=session.language))
 
 @app.post("/sessions/{key}/fields/{field_id}", response_model=Session)
 def answer(key: str, field_id: str, answer: Answer):

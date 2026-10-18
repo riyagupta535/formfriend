@@ -8,7 +8,8 @@ import httpx
 from .gemini_cache import get_response, put_response, response_key
 
 
-async def gemini_json(system: str, request: str, *, purpose: str, thinking: str = "low") -> str:
+async def gemini_json(system: str, request: str, *, purpose: str, thinking: str = "low",
+                      max_output_tokens: int = 2048) -> str:
     """Return the model's JSON text. Raises on provider errors; callers decide how to degrade."""
     model = os.getenv("GEMINI_JUDGE_MODEL") or os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
     base = os.getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
@@ -25,7 +26,7 @@ async def gemini_json(system: str, request: str, *, purpose: str, thinking: str 
                 json={
                     "systemInstruction": {"parts": [{"text": system}]},
                     "contents": [{"role": "user", "parts": [{"text": request}]}],
-                    "generationConfig": {"responseMimeType": "application/json", "maxOutputTokens": 2048,
+                    "generationConfig": {"responseMimeType": "application/json", "maxOutputTokens": max_output_tokens,
                                          "thinkingConfig": {"thinkingLevel": thinking}},
                 },
             )

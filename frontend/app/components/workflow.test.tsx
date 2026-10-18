@@ -4,7 +4,7 @@ import Workflow from './workflow';
 
 const push = vi.hoisted(() => vi.fn());
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push }) }));
-afterEach(() => { cleanup(); sessionStorage.clear(); localStorage.clear(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); sessionStorage.clear(); localStorage.clear(); vi.unstubAllGlobals(); vi.restoreAllMocks(); push.mockClear(); });
 
 it('accepts valid document and screenshot extensions', async () => {
   const uploaded = {
@@ -24,42 +24,29 @@ it('accepts valid document and screenshot extensions', async () => {
   expect(screen.queryByText('Choose a PDF, DOCX, PNG, or JPG file.')).toBeNull();
 });
 
-it('turns an upload into a guided conversation and opens it', async () => {
-  const guidedSession = { session_id: 'guided', filename: 'form.pdf', mode: 'mock', document_type: 'pdf', warnings: [], fields: [] };
-  const fetchMock = vi.fn(async (url: string, options?: RequestInit) => {
-    if (url.endsWith('/sessions') && options?.method === 'POST') return { ok: true, json: async () => ({ session_id: 'upload' }) };
-    if (url.endsWith('/agent/sessions/from-upload')) return { ok: true, json: async () => ({ session_id: 'guided' }) };
-    if (url.endsWith('/sessions/guided')) return { ok: true, json: async () => guidedSession };
-    throw Error(`Unexpected request: ${url}`);
-  });
+it('keeps the upload page unchanged and opens the language step after parsing', async () => {
+  const uploaded = { session_id: 'upload', filename: 'form.pdf', fields: [], warnings: [] };
+  const fetchMock = vi.fn(async (_url: string, _options?: RequestInit) => ({ ok: true, json: async () => uploaded }));
   vi.stubGlobal('fetch', fetchMock);
   render(<Workflow stage="upload" />);
+  expect(screen.queryByLabelText('Question language')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Choose a file' })).toBeTruthy();
   fireEvent.change(document.getElementById('document') as HTMLInputElement,
     { target: { files: [new File(['pdf'], 'form.pdf', { type: 'application/pdf' })] } });
-  await waitFor(() => expect(push).toHaveBeenCalledWith('/guide'));
-  const bridge = fetchMock.mock.calls.find(([url]) => url.endsWith('/from-upload'))!;
-  expect(JSON.parse(bridge[1]!.body as string)).toEqual({ document_session_id: 'upload' });
-  expect(sessionStorage.getItem('formfriend-session')).toBe('guided');
+  await waitFor(() => expect(push).toHaveBeenCalledWith('/language'));
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(sessionStorage.getItem('formfriend-session')).toBe('upload');
 });
 
-it('opens the guide immediately while Gemini simplification is pending', async () => {
-  const calls: string[] = [];
-  const fetchMock = vi.fn(async (url: string, options?: RequestInit) => {
-    calls.push(url);
-    if (url.endsWith('/sessions') && options?.method === 'POST') return { ok: true, json: async () => ({
-      session_id: 'upload', mode: 'gemini', simplification_status: 'pending', fields: [], warnings: [],
-    }) };
-    if (url.endsWith('/agent/sessions/from-upload')) return { ok: true, json: async () => ({ session_id: 'guided' }) };
-    if (url.endsWith('/sessions/guided')) return { ok: true, json: async () => ({ session_id: 'guided', fields: [], warnings: [] }) };
-    throw Error(`Unexpected request: ${url}`);
-  });
+it('opens language selection while background question simplification is still pending', async () => {
+  const fetchMock = vi.fn(async (_url: string, _options?: RequestInit) => ({ ok: true, json: async () => ({
+    session_id: 'upload', mode: 'gemini', simplification_status: 'pending', fields: [], warnings: [],
+  }) }));
   vi.stubGlobal('fetch', fetchMock);
   render(<Workflow stage="upload" />);
-
   fireEvent.change(document.getElementById('document') as HTMLInputElement,
     { target: { files: [new File(['pdf'], 'form.pdf', { type: 'application/pdf' })] } });
-
-  await waitFor(() => expect(push).toHaveBeenCalledWith('/guide'), { timeout: 2000 });
-  expect(calls).not.toContain('http://localhost:8000/sessions/upload');
-  expect(calls).toContain('http://localhost:8000/agent/sessions/from-upload');
+  await waitFor(() => expect(push).toHaveBeenCalledWith('/language'));
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect((fetchMock.mock.calls[0][1]!.body as FormData).get('language')).toBeNull();
 });

@@ -1,5 +1,6 @@
 "use client";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import GuidedConversation from "./guided-conversation";
 import Mascot from "./mascot";
@@ -9,6 +10,7 @@ import { startSampleSession } from "../../lib/sample-form";
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 export default function GuidePage() {
+  const router = useRouter();
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState("");
@@ -16,13 +18,13 @@ export default function GuidePage() {
     const key = sessionStorage.getItem("formfriend-session");
     if (!key) { setReady(true); return; }
     // Only agent sessions (created from generated questions) can be guided.
-    fetch(`${API}/agent/sessions/${key}/next-question`).then(r => { if (r.ok) setSessionId(key); })
+    fetch(`${API}/agent/sessions/${key}/next-question`).then(r => { if (r.ok) setSessionId(key); else if (r.status === 409) router.replace("/language"); })
       .catch(() => setError("Can’t reach forma. Make sure the backend is running on port 8000."))
       .finally(() => setReady(true));
-  }, []);
+  }, [router]);
   async function trySample() {
     setError("");
-    try { setSessionId(await startSampleSession()); }
+    try { await startSampleSession(); router.push("/language"); }
     catch (e) { setError(e instanceof TypeError ? "Can’t reach forma. Make sure the backend is running on port 8000." : (e as Error).message); }
   }
   return <><Header compact /><main className="workflow guide-workflow"><Steps active={1} />

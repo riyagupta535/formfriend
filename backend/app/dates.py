@@ -5,6 +5,10 @@ from datetime import date
 _MONTHS = {name.lower(): index for index, name in enumerate(
     ['January','February','March','April','May','June','July','August','September','October','November','December'], 1)}
 _MONTHS.update({name[:3]: number for name, number in list(_MONTHS.items())})
+_MONTHS.update({name: index for index, name in enumerate(
+    ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto',
+     'septiembre', 'octubre', 'noviembre', 'diciembre'], 1)})
+_MONTHS['setiembre'] = 9
 
 
 def normalize_date(value: str) -> str:
@@ -12,7 +16,7 @@ def normalize_date(value: str) -> str:
     iso = re.fullmatch(r'(\d{4})-(\d{2})-(\d{2})', value)
     us = re.fullmatch(r'(\d{1,2})[/-](\d{1,2})[/-](\d{4})', value)
     named = re.fullmatch(r'([A-Za-z]+)\.?\s+(\d{1,2})(?:st|nd|rd|th)?[,]?\s+(\d{4})', value, re.I)
-    day_first = re.fullmatch(r'(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?([A-Za-z]+)\.?[,]?\s+(\d{4})', value, re.I)
+    day_first = re.fullmatch(r'(\d{1,2})(?:st|nd|rd|th)?\s+(?:(?:of|de)\s+)?([A-Za-z]+)\.?[,]?\s+(?:de\s+)?(\d{4})', value, re.I)
     if iso:
         year, month, day = map(int, iso.groups())
     elif us:

@@ -13,6 +13,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from .gemini_json import gemini_json
+from .languages import LANGUAGE_INSTRUCTIONS, REASK_MESSAGES
 
 logger = logging.getLogger("formfriend.judge")
 
@@ -71,7 +72,7 @@ def should_judge(question) -> bool:
     return question.input_type not in SKIP_TYPES and bool(os.getenv("GEMINI_API_KEY"))
 
 
-async def judge_answer(question, raw_response: str, value, earlier: dict[str, str]) -> Judgement:
+async def judge_answer(question, raw_response: str, value, earlier: dict[str, str], *, language: str = "en") -> Judgement:
     """Ask the model whether the answer fits. Raises on provider errors; the caller decides what to do."""
     request = json.dumps({
         "question": question.simplified_question,
@@ -82,10 +83,11 @@ async def judge_answer(question, raw_response: str, value, earlier: dict[str, st
         "value_to_save": value,
         "earlier_answers": earlier,
     }, ensure_ascii=False)
-    content = await gemini_json(SYSTEM_PROMPT, request, purpose="judge-v2",
+    prompt = SYSTEM_PROMPT + f"\nThe person is answering in {LANGUAGE_INSTRUCTIONS[language]}. Accept relevant answers in this language or English. Write message and help_topic in {LANGUAGE_INSTRUCTIONS[language]}. Do not require English spelling for names or addresses."
+    content = await gemini_json(prompt, request, purpose="judge-v2",
                                 thinking=os.getenv("GEMINI_JUDGE_THINKING_LEVEL", "low"))
     judgement = Judgement.model_validate_json(content)
     if judgement.verdict in {"reask", "clarify"} and not judgement.message.strip():
-        judgement.message = "I’m not sure that answers the question. Could you tell me again?"
+        judgement.message = REASK_MESSAGES[language]
     logger.info("Judged %s: %s", question.id, judgement.verdict)
     return judgement

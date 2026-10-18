@@ -2,6 +2,7 @@
 export type AnswerField = {
   answer_type?: "text" | "number" | "currency" | "date" | "checkbox" | "choice" | "multichoice";
   options?: string[];
+  option_labels?: Record<string, string>;
 };
 
 export function selectedOptions(value: string): string[] {
@@ -25,14 +26,14 @@ export default function AnswerInput({ field, id, value, onChange, onBlur, disabl
           const next = e.target.checked ? [...selected, option] : selected.filter(item => item !== option);
           const encoded = next.length ? JSON.stringify(next) : "";
           onChange(encoded); onBlur?.(encoded);
-        }}/>{option}
+        }}/>{field.option_labels?.[option] ?? option}
       </label>)}
     </div>;
   }
   if (field.answer_type === "checkbox" || field.answer_type === "choice") {
     return <select id={id} value={value} disabled={disabled} onChange={e => onChange(e.target.value)} onBlur={e => onBlur?.(e.target.value)}>
       <option value="">Choose an answer (or skip)</option>
-      {(field.options || []).map(option => <option key={option} value={option}>{option}</option>)}
+      {(field.options || []).map(option => <option key={option} value={option}>{field.option_labels?.[option] ?? option}</option>)}
     </select>;
   }
   if (field.answer_type === "date") {

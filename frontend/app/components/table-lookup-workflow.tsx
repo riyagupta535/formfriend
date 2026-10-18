@@ -1,4 +1,5 @@
 "use client";
+import { useQuestionLabel } from "./question-language";
 
 import { useState } from "react";
 
@@ -25,6 +26,7 @@ export default function TableLookupWorkflow({
   onLookup: (input: { filing_status: string; higher_wage: number; lower_wage: number }) => Promise<string>;
   onComplete: (value: string) => void;
 }) {
+  const optionLabel = useQuestionLabel();
   const [step, setStep] = useState(0);
   const [filingStatus, setFilingStatus] = useState("");
   const [higherWage, setHigherWage] = useState("");
@@ -70,7 +72,7 @@ export default function TableLookupWorkflow({
           className="decision-option"
           disabled={busy}
           onClick={() => { setFilingStatus(table.filing_status); setStep(1); }}
-        >{table.filing_status}<span aria-hidden="true">→</span></button>)}
+        >{optionLabel(table.filing_status)}<span aria-hidden="true">→</span></button>)}
       </div>
     </>}
     {step === 1 && <>

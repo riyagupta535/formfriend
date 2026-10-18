@@ -10,6 +10,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from .gemini_json import gemini_json
+from .languages import LANGUAGE_NAMES, LANGUAGE_INSTRUCTIONS
 
 SYSTEM_PROMPT = """You teach people about the forms they are filling in, one question at a time.
 They may have cognitive disabilities, low literacy, or limited English. The goal is that they understand
@@ -49,7 +50,7 @@ class Lesson(BaseModel):
     trigger: Literal["auto", "asked"] = "auto"
 
 
-async def lesson_for(question, person_asked: str = "") -> Lesson:
+async def lesson_for(question, person_asked: str = "", *, language: str = "en") -> Lesson:
     """A lesson for this question, or needed=False. Raises on provider errors."""
     request = json.dumps({
         "question": question.simplified_question,
@@ -58,8 +59,10 @@ async def lesson_for(question, person_asked: str = "") -> Lesson:
         "section": question.source_reference.section if question.source_reference else None,
         "answer_choices": question.options,
         "person_asked": person_asked.strip(),
+        "response_language": LANGUAGE_NAMES[language],
     }, ensure_ascii=False)
-    lesson = Lesson.model_validate_json(await gemini_json(SYSTEM_PROMPT, request, purpose="teach-v1"))
+    prompt = SYSTEM_PROMPT + f"\nWrite the title, explanation, example and why_it_matters entirely in clear {LANGUAGE_INSTRUCTIONS[language]}."
+    lesson = Lesson.model_validate_json(await gemini_json(prompt, request, purpose="teach-v1"))
     lesson.trigger = "asked" if person_asked.strip() else "auto"
     if lesson.needed and not lesson.explanation.strip():
         lesson.needed = False

@@ -13,7 +13,7 @@ def accept_answers_without_calling_gemini(monkeypatch):
     from app import agent_tools
     from app.answer_judge import Judgement
 
-    async def accept(question, raw_response, value, earlier):
+    async def accept(question, raw_response, value, earlier, *, language='en'):
         return Judgement(reasoning="Test stub accepts every answer.", verdict="accept", message="")
     monkeypatch.setattr(agent_tools, "judge_answer", accept)
 
@@ -24,6 +24,6 @@ def no_lessons_without_calling_gemini(monkeypatch):
     from app import agent_tools
     from app.teaching import Lesson
 
-    async def nothing_to_teach(question, person_asked=""):
+    async def nothing_to_teach(question, person_asked="", *, language='en'):
         return Lesson(needed=False)
     monkeypatch.setattr(agent_tools, "lesson_for", nothing_to_teach)

@@ -21,6 +21,7 @@ from .answer_judge import judge_answer, should_judge
 from .teaching import lesson_for
 from .models import FormField, Session
 from .dates import normalize_date
+from .languages import present_state, present_question, answer_error, FORM_TITLES
 from .text_utils import strip_form_reference
 
 
@@ -117,7 +118,7 @@ def _valid_city_state_zip(value: str) -> bool:
     if not zip_code:
         return False
     rest = (value[:zip_code.start()] + ' ' + value[zip_code.end():]).lower()
-    words = re.findall(r'[a-z]+', rest)
+    words = re.findall(r'[^\W\d_]+', rest)
     state = next((name for name in US_STATES.values() if re.search(rf'\b{name}\b', rest)), None)
     if state is None:
         code = next((w for w in words if len(w) == 2 and w.upper() in US_STATES), None)
@@ -446,14 +447,14 @@ async def create_agent_session(body: AgentSessionRequest):
         fields.append(field)
     key = uuid4().hex
     session = Session(session_id=key, filename=source.filename if source else 'form-answers',
-        document_type=source.document_type if source else 'image', mode='step-5-preview', fields=fields,
+        document_type=source.document_type if source else 'image', mode='step-5-preview', fields=fields, language=source.language if source else body.language,
         agent_state=AgentState(questions=body.questions),
         pdf_has_answer_sheet=any(f.extraction == 'printed' for f in fields),
         warnings=['Review all answers before exporting. Questions without a PDF mapping use an answer sheet.'])
     refresh_applicability(session)
     sessions[key] = (time.monotonic(), session)
     documents[key] = documents[source.session_id] if source else b''
-    return next_question(session)
+    return await present_state(session, next_question(session))
 
 
 def questions_from_fields(session):
@@ -515,19 +516,20 @@ async def create_agent_session_from_upload(body: FromUploadRequest):
     else:
         sessions.pop(source.session_id, None)
         documents.pop(source.session_id, None)
-    return next_question(guided)
+    return await present_state(guided, next_question(guided))
 
 
 @router.get('/sessions/{key}/next-question', operation_id='get_next_question')
 async def get_next_question(key: str):
-    return next_question(get_agent_session(key))
+    session = get_agent_session(key)
+    return await present_state(session, next_question(session))
 
 
 @router.get('/sessions/{key}/questions/{question_id}/context', operation_id='get_question_context')
 async def get_question_context(key: str, question_id: str):
     session = get_agent_session(key)
     question, field = find_question(session, question_id)
-    return {'question': question.model_dump(), 'status': field.status,
+    return {'question': await present_question(session, question.model_dump()), 'status': field.status,
             'answer': decoded(question, field.user_response) if field.status == 'answered' else None,
             'dependency_answers': {q.id: decoded(q, f.user_response)
                 for q in session.agent_state.questions for f in session.fields
@@ -543,13 +545,16 @@ async def save_answer(key: str, body: SaveAgentAnswer):
     question, field = find_question(session, body.question_id)
     if field.status in {'blocked', 'not_applicable'}:
         raise HTTPException(409, 'This question is not currently applicable. Get the next question first.')
-    value = encoded(question, body.value)
-    check = await check_meaning(session, question, body.raw_response, decoded(question, value))
+    try:
+        value = encoded(question, body.value)
+        check = await check_meaning(session, question, body.raw_response, decoded(question, value))
+    except HTTPException as error:
+        raise await answer_error(error, session.language) from None
     if check.get('verdict') == 'help':
         # They asked something instead of answering: teach it, save nothing, stay on this question.
         lesson = await teach(session, question, check['help_topic'] or body.raw_response or str(body.value))
         return {'saved': False, 'asked_for_help': True, 'question_id': question.id, 'lesson': lesson,
-                'next': next_question(session)}
+                'next': await present_state(session, next_question(session))}
     # Another save may have landed while the model was thinking; never overwrite newer answers.
     check_revision(session, body.revision)
     invalidated = invalidate_dependents(session, question.id) if field.user_response != value else []
@@ -560,7 +565,7 @@ async def save_answer(key: str, body: SaveAgentAnswer):
     session.agent_state.revision += 1
     refresh_applicability(session)
     return {'saved': True, 'question_id': question.id, 'value': decoded(question, value), 'check': check,
-            'invalidated_question_ids': invalidated, 'next': next_question(session)}
+            'invalidated_question_ids': invalidated, 'next': await present_state(session, next_question(session))}
 
 
 async def check_meaning(session, question, raw_response, value):
@@ -572,7 +577,8 @@ async def check_meaning(session, question, raw_response, value):
                for q in session.agent_state.questions
                if q.id != question.id and fields[q.id].status == 'answered'}
     try:
-        judgement = await judge_answer(question, raw_response, value, dict(list(earlier.items())[-8:]))
+        judgement = await judge_answer(question, raw_response, value, dict(list(earlier.items())[-8:]),
+                                       **({'language': session.language} if session.language != 'en' else {}))
     except Exception as error:  # Provider trouble must not trap someone mid-form; format rules still applied.
         logger.warning('Answer check unavailable for %s: %s', question.id, type(error).__name__)
         return {'judged': False, 'reason': 'The answer check was unavailable, so only format rules were applied.'}
@@ -586,17 +592,23 @@ async def check_meaning(session, question, raw_response, value):
 async def teach(session, question, asked=''):
     """A lesson for this question (or needed=False), saved to the person's learned list when taught."""
     try:
-        lesson = (await lesson_for(question, asked)).model_dump()
+        lesson = (await lesson_for(question, asked, **({'language': session.language} if session.language != 'en' else {}))).model_dump()
     except Exception as error:
         logger.warning('Teaching unavailable for %s: %s', question.id, type(error).__name__)
         if not asked:
             return {'needed': False, 'unavailable': True}
         # They asked: fall back to the form's own help text rather than leaving them with nothing.
         help_text = question.help_text.strip()
+        if session.language != 'en' and help_text:
+            from .languages import translate_strings
+            try:
+                help_text = (await translate_strings([help_text], session.language))[help_text]
+            except Exception:
+                help_text = ''
         if not help_text:
             raise HTTPException(502, 'I couldn’t look that up right now. You can open “What the form says”, '
                                      'or ask the office that sent the form.') from None
-        lesson = {'needed': True, 'title': 'What the form says', 'explanation': help_text[:900],
+        lesson = {'needed': True, 'title': FORM_TITLES[session.language], 'explanation': help_text[:900],
                   'example': '', 'why_it_matters': '', 'trigger': 'asked', 'unavailable': True}
     if lesson['needed']:
         entry = GlossaryEntry(term=lesson['title'] or question.simplified_question[:120], explanation=lesson['explanation'],
@@ -630,7 +642,7 @@ async def skip_question(key: str, body: SkipAgentQuestion):
     session.agent_state.revision += 1
     refresh_applicability(session)
     return {'skipped': True, 'question_id': question.id, 'invalidated_question_ids': invalidated,
-            'next': next_question(session)}
+            'next': await present_state(session, next_question(session))}
 
 
 def apply_review(session, answers):

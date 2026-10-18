@@ -2,6 +2,7 @@
 import math
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt, StrictStr, model_validator
+from .languages import QuestionLanguage
 
 Scalar = StrictBool | StrictInt | StrictFloat | StrictStr | None
 Value = StrictBool | StrictInt | StrictFloat | StrictStr | list[StrictStr]
@@ -119,6 +120,7 @@ class AgentSessionRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     questions: list[AgentQuestion] = Field(min_length=1, max_length=100)
     document_session_id: str | None = None
+    language: QuestionLanguage = 'en'
 
     @model_validator(mode='after')
     def validate_graph(self):

@@ -1,3 +1,4 @@
+import pytest
 import httpx
 from fastapi.testclient import TestClient
 from app.main import app
@@ -37,3 +38,16 @@ def test_provider_error_is_sanitized(monkeypatch):
         response=client.post('/voice/speech',json={'text':'Your name?'})
         assert response.status_code == 502
         assert 'secret' not in response.text
+
+
+@pytest.mark.parametrize('language', ['en', 'es', 'zh', 'fil', 'vi', 'ar', 'fr', 'ko', 'pt', 'hi'])
+def test_speech_selects_requested_language(monkeypatch, language):
+    monkeypatch.setenv('ELEVENLABS_API_KEY', 'test-only-key')
+    monkeypatch.setenv('ELEVENLABS_VOICE_ID', 'demo-voice')
+    async def post(self, url, **kwargs):
+        assert kwargs['json']['language_code'] == language
+        assert kwargs['json']['text'] == '¿Cómo te llamas?'
+        return httpx.Response(200, content=b'audio', request=httpx.Request('POST', url))
+    monkeypatch.setattr(httpx.AsyncClient, 'post', post)
+    with TestClient(app) as client:
+        assert client.post('/voice/speech', json={'text': '¿Cómo te llamas?', 'language': language}).status_code == 200

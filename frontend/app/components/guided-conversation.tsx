@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { ConversationProvider, useConversation, useConversationClientTool } from "@elevenlabs/react";
 import Mascot from "./mascot";
 import DateEntry from "./date-entry";
+import { QuestionLabels, type QuestionLanguage } from "./question-language";
+import { QUESTION_LANGUAGES, questionLanguage, agentLanguage } from "../../lib/question-languages";
 import { useAgentSpeechMouth } from "../../lib/useAgentSpeechMouth";
 import GuidedCalculation, { type CalculationSpec, type GuidedQuestion } from "./guided-calculation";
 import { chooseDecisionAnswer, currentDecisionNode, type DecisionStep, type DecisionTree } from "./decision-tree";
@@ -15,6 +17,7 @@ import PayPeriodCalculation, { type PayPeriodCalculationSpec } from "./pay-perio
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 type Question = {
+  option_labels?: Record<string, string>;
   id: string; original_text: string; simplified_question: string; help_text?: string;
   input_type: string; options: string[]; required: boolean;
   subquestions?: GuidedQuestion[]; calculation?: CalculationSpec | null; decision_tree?: DecisionTree | null;
@@ -23,6 +26,7 @@ type Question = {
   source_reference?: { page?: number | null; section?: string | null } | null;
 };
 type NextState = {
+  language?: QuestionLanguage; language_notice?: string;
   session_id: string; revision: number; status: "loading" | "question" | "complete" | "blocked";
   question: Question | null; progress: Record<string, number>; prior_answers?: Record<string, string>;
 };
@@ -54,19 +58,19 @@ function typedValue(question: Question, text: string): unknown {
   const value = text.trim();
   const normalized = value.toLowerCase();
   if (question.input_type === "boolean") {
-    if (["yes", "y", "true"].includes(normalized)) return true;
-    if (["no", "n", "false"].includes(normalized)) return false;
+    if (["yes", "y", "true", "sí", "si", question.option_labels?.Yes?.toLowerCase()].includes(normalized)) return true;
+    if (["no", "n", "false", question.option_labels?.No?.toLowerCase()].includes(normalized)) return false;
   }
   if (question.input_type === "number" || question.input_type === "currency") {
     const number = Number(value.replace(/[$,\s]/g, ""));
     if (Number.isFinite(number)) return number;
   }
   if (question.input_type === "choice") {
-    return question.options.find(option => option.toLowerCase() === normalized) ?? value;
+    return question.options.find(option => (option.toLowerCase() === normalized || question.option_labels?.[option]?.toLowerCase() === normalized)) ?? value;
   }
   if (question.input_type === "multichoice") {
     const requested = value.split(",").map(option => option.trim()).filter(Boolean);
-    return requested.map(item => question.options.find(option => option.toLowerCase() === item.toLowerCase()) ?? item);
+    return requested.map(item => question.options.find(option => (option.toLowerCase() === item.toLowerCase() || question.option_labels?.[option]?.toLowerCase() === item.toLowerCase())) ?? item);
   }
   return value;
 }
@@ -251,15 +255,16 @@ function Conversation({ sessionId }: { sessionId: string }) {
       const response = await fetch(`${API}/voice/agent-session`);
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw Error(typeof body.detail === "string" ? body.detail : "The voice guide could not start.");
-      const firstMessage = !resuming
-        ? "Hi, I’m Fomy. I’ll help you fill out your form, one small question at a time. Ready to start?"
-        : latest.body.status === "complete"
-        ? "Your answers are ready to review."
-        : latest.body.question?.simplified_question || "Let’s continue with the question we were working on.";
+      const language = questionLanguage(latest.body.language);
+      const selectedLanguage = QUESTION_LANGUAGES[language];
+      const firstMessage = !resuming ? selectedLanguage.greeting
+        : latest.body.status === "complete" ? selectedLanguage.ready
+        : latest.body.question?.simplified_question || selectedLanguage.resume;
       await conversation.startSession({ signedUrl: body.signed_url, connectionType: "websocket", textOnly: false,
-        overrides: {agent: {firstMessage}},
+        overrides: {agent: {firstMessage, ...(language !== "en" ? {language: agentLanguage(language)} : {})}},
       });
       setHasStarted(true);
+      if (language !== "en") conversation.sendContextualUpdate(`This form conversation is in ${selectedLanguage.name}. Speak and explain in clear, neutral ${selectedLanguage.name}, including validation feedback. Accept answers in this language or English. Read option_labels to the person, but pass the corresponding original options value to save_answer. Save names, addresses and free-text answers as given, without translating them. Convert clearly stated dates in this language to YYYY-MM-DD; ask about ambiguous numeric dates instead of guessing.`);
       conversation.sendContextualUpdate("Your name is Fomy, the friendly guide for forma. Apply the same relevance, clarity, and specificity checks to spoken AND typed messages. A typed message can also be a clarification request, not an answer. Ask a follow-up when needed; only save clear answers using save_answer, and follow validation errors without advancing.");
       if (resuming) conversation.sendContextualUpdate(
         "This is a continuation of the same form after a break. Do not repeat your introduction or ask if the person is ready. " +
@@ -369,6 +374,8 @@ function Conversation({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     setSaid(current => current.rejected ? { friend: "", you: "" } : { ...current, you: "" });
   }, [questionId]);
+  const language = questionLanguage(state?.language);
+  const optionLabel = (value: string) => question?.option_labels?.[value] ?? value;
   const reference = question?.source_reference;
   const options = question?.input_type === "boolean" && question.options.length === 0
     ? ["Yes", "No"] : question?.options ?? [];
@@ -421,9 +428,11 @@ function Conversation({ sessionId }: { sessionId: string }) {
       </>}
     </section>}
 
-    <div className="guide-scene">
+    <p className="question-language-note">Question language: {QUESTION_LANGUAGES[language].label}</p>
+    {state?.language_notice && <p role="status" className="workflow-warning">{state.language_notice} <button type="button" className="text-button" onClick={() => void tool(`${sessionId}/next-question`).then(result => result.ok && track(result.body))}>Retry translation</button></p>}
+    <QuestionLabels.Provider value={question?.option_labels ?? {}}><div className="guide-scene">
       <div className="guide-mascot"><Mascot flipped talking={live && conversation.isSpeaking} mouthOpen={mouthOpen} /></div>
-      <div className="guide-bubble">
+      <div className="guide-bubble" lang={QUESTION_LANGUAGES[language].htmlLang} dir={language === "ar" ? "rtl" : "ltr"}>
         {said.friend && !said.rejected && <p className={`guide-says${said.rejected ? " is-reask" : ""}`} role={said.rejected ? "alert" : undefined} aria-live={said.rejected ? undefined : "polite"}><span>Fomy</span>{said.friend}</p>}
           {state?.status === "loading" && <div className="chat-message chat-friend-current" role="status" aria-live="polite">
             <div className="chat-message-meta"><span className="chat-speaker">Preparing your next step</span></div>
@@ -482,14 +491,14 @@ function Conversation({ sessionId }: { sessionId: string }) {
             </fieldset>}
             {!guidedInteraction && (question.input_type === "choice" || question.input_type === "boolean") && options.length > 0 && <div className="decision-options" role="group" aria-label="Answer choices">
               {options.map(option => <button key={option} type="button" className="decision-option" disabled={saving} onClick={() => void submitAnswer(option)}>
-                {option}<span aria-hidden="true">→</span>
+                {optionLabel(option)}<span aria-hidden="true">→</span>
               </button>)}
             </div>}
             {!guidedInteraction && question.input_type === "multichoice" && options.length > 0 && <div className="decision-options" role="group" aria-label="Select all that apply">
               {options.map(option => <button key={option} type="button" aria-pressed={selectedOptions.includes(option)}
                 className={`decision-option ${selectedOptions.includes(option) ? "selected" : ""}`} disabled={saving}
                 onClick={() => setSelectedOptions(current => current.includes(option) ? current.filter(item => item !== option) : [...current, option])}>
-                {option}<span aria-hidden="true">{selectedOptions.includes(option) ? "✓" : "+"}</span>
+                {optionLabel(option)}<span aria-hidden="true">{selectedOptions.includes(option) ? "✓" : "+"}</span>
               </button>)}
               <button type="button" className="button secondary" disabled={saving || selectedOptions.length === 0}
                 onClick={() => void submitAnswer(selectedOptions.join(", "))}>Save selected choices</button>
@@ -541,17 +550,18 @@ function Conversation({ sessionId }: { sessionId: string }) {
       </form>
       </div>
     </div>
+    </QuestionLabels.Provider>
     {lines.length > 0 && <section className="guide-conversation-log" aria-label="Conversation transcript">
       <button className="text-button" type="button" aria-expanded={transcriptOpen} aria-controls="guide-transcript" onClick={() => setTranscriptOpen(open => !open)}>Conversation so far</button>
       {transcriptOpen && <div id="guide-transcript" className="guide-transcript" ref={transcript} aria-live="polite">
         {lines.map(line => <div key={line.id} className={`chat-message ${line.speaker === "you" ? "chat-user" : "chat-friend-history"}`}>
-          <span className="chat-speaker">{line.speaker === "you" ? "You" : "Fomy"}</span><p>{line.text}</p>
+          <span className="chat-speaker">{line.speaker === "you" ? "You" : "Fomy"}</span><p dir="auto">{line.text}</p>
         </div>)}
       </div>}
     </section>}
     {learned.length > 0 && <div className="guide-learned" aria-label="Things you learned">
       <h3>Things you learned</h3>
-      {learned.map(item => <details key={item.term} open={item === learned[0]}>
+      {learned.map(item => <details key={item.term} lang={QUESTION_LANGUAGES[language].htmlLang} dir="auto" open={item === learned[0]}>
         <summary>{item.term}</summary><p>{item.explanation}</p>{item.example && <p className="guide-example">For example: {item.example}</p>}
         {item.why_it_matters && <p className="guide-example">Why it matters: {item.why_it_matters}</p>}
       </details>)}

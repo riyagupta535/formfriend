@@ -238,3 +238,20 @@ formats, conditional-question behavior, PDF mapping, and final review integratio
 Try `examples/step5-questions.json` with `POST /agent/sessions`. These APIs do not
 require an ElevenLabs agent or an LLM to test. Connecting the configured agent and
 passing the session ID from the frontend remain integration tasks.
+
+### Multilingual form conversations
+
+Upload a file or try the sample from **Upload your form**. The next page asks which language Fomy should use; choose your language and select **Continue to questions**. The site navigation and buttons stay in English. Document questions, answer-choice labels, helpful explanations, validation feedback, and Fomy’s conversation use your selected language. Choices are English, Spanish, Chinese, Tagalog, Vietnamese, Arabic, French, Korean, Portuguese, and Hindi. Chinese uses Simplified Chinese text and Mandarin speech; Tagalog uses `fil` in form sessions and text-to-speech, adapted to `tl` for the conversation SDK; Arabic uses Modern Standard Arabic with right-to-left question text; Portuguese uses Brazilian Portuguese. The preference belongs to the form session and survives a page refresh and voice-session restart.
+
+Question translation uses the existing `GEMINI_API_KEY`. If translation is unavailable, the guide explicitly shows a notice with **Retry translation** and keeps the original question available. Translations are cached per question and refreshed if background simplification changes its wording.
+
+The original form wording, field IDs, calculations, and saved choice values remain intact for export. Names, addresses, and free-text answers are saved as entered; this feature does not automatically translate a completed document or its answers into English. Spanish dates such as `2 de enero de 2000` are accepted; numeric date entry retains the displayed month/day/year convention.
+
+For multilingual voice, the existing ElevenLabs agent must allow per-conversation language overrides. Enable just that setting, preserving its current voice, prompt, and tools:
+
+```bash
+cd backend
+.venv/bin/python scripts/setup_elevenlabs_agent.py --enable-language-selection
+```
+
+The full agent setup/update command also enables the language override for future installations. The browser supplies the selected language code and a matching opening greeting, including when resuming a conversation. The same ElevenLabs key and agent serve all ten languages. Voice pronunciation still needs listening checks with fluent speakers.

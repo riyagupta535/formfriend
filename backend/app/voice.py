@@ -2,11 +2,13 @@ import os
 import httpx
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, Field
+from .languages import QuestionLanguage
 
 router = APIRouter(prefix="/voice", tags=["voice"])
 
 class SpeechRequest(BaseModel):
     text: str = Field(min_length=1, max_length=1500)
+    language: QuestionLanguage = 'en'
 
 @router.get('/status')
 def status():
@@ -21,7 +23,7 @@ async def speech(body: SpeechRequest):
         async with httpx.AsyncClient(timeout=30) as client:
             result = await client.post(f'https://api.elevenlabs.io/v1/text-to-speech/{voice}',
                 headers={'xi-api-key': key, 'Accept': 'audio/mpeg'},
-                json={'text': body.text, 'model_id': 'eleven_flash_v2_5'})
+                json={'text': body.text, 'model_id': 'eleven_flash_v2_5', 'language_code': body.language})
         result.raise_for_status()
     except httpx.HTTPError:
         raise HTTPException(502, 'Voice playback is unavailable. Please try again or read the question.') from None

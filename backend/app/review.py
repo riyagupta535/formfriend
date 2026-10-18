@@ -83,16 +83,20 @@ async def export_review(key: str, body: ReviewedExport):
         raise HTTPException(422, 'Review must include each form field exactly once. Refresh and try again.')
     updated = original.model_copy(deep=True)
     values = {answer.field_id: answer.value for answer in body.answers}
-    if updated.agent_state:
-        apply_review(updated, values)
-    for field in updated.fields:
-        if field.field_id not in values:
-            continue
-        value = field.user_response if updated.agent_state else values[field.field_id]
-        validate_value(field, value)
-        field.user_response = field.interpreted_value = value
-        field.confirmed = bool(value.strip())
-        field.status = 'answered' if value.strip() else 'skipped'
+    try:
+        if updated.agent_state:
+            apply_review(updated, values)
+        for field in updated.fields:
+            if field.field_id not in values:
+                continue
+            value = field.user_response if updated.agent_state else values[field.field_id]
+            validate_value(field, value)
+            field.user_response = field.interpreted_value = value
+            field.confirmed = bool(value.strip())
+            field.status = 'answered' if value.strip() else 'skipped'
+    except HTTPException as error:
+        from .languages import answer_error
+        raise await answer_error(error, original.language) from None
     try:
         export_snapshot = updated.model_copy(update={'fields': visible_fields(updated)}) if updated.agent_state else updated
         pdf = await asyncio.to_thread(reviewed_pdf, export_snapshot, documents[key])

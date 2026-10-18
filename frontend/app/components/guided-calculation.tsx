@@ -1,4 +1,5 @@
 "use client";
+import { useQuestionLabel } from "./question-language";
 
 import { useEffect, useState } from "react";
 
@@ -35,6 +36,7 @@ export default function GuidedCalculation({
   busy: boolean;
   onComplete: (value: string) => void;
 }) {
+  const optionLabel = useQuestionLabel();
   const [step, setStep] = useState(0);
   const [answers, setAnswers] = useState<string[]>([]);
   const [draft, setDraft] = useState("");
@@ -142,7 +144,7 @@ export default function GuidedCalculation({
     <p>Step {step + 1} of {questions.length}</p>
     {question.helper_text && <p className="helper-text">{question.helper_text}</p>}
     {question.answer_type === "choice" ? <div className="decision-options">
-      {question.options.map(option => <button key={option} type="button" className="decision-option" disabled={busy} onClick={() => record(option)}>{option}<span>→</span></button>)}
+      {question.options.map(option => <button key={option} type="button" className="decision-option" disabled={busy} onClick={() => record(option)}>{optionLabel(option)}<span>→</span></button>)}
     </div> : <div className="guided-number">
       <label htmlFor="guided-number-answer">Your answer</label>
       <input id="guided-number-answer" type="number" min="0" step="1" value={draft} onChange={event => setDraft(event.target.value)} />

@@ -1,4 +1,5 @@
 "use client";
+import { useQuestionLabel } from "./question-language";
 
 import { useState } from "react";
 
@@ -36,6 +37,7 @@ export default function WorksheetWorkflow({
   onCalculate: (answers: Record<string, string>) => Promise<string>;
   onComplete: (value: string) => void;
 }) {
+  const optionLabel = useQuestionLabel();
   const [route, setRoute] = useState<Route | null>(null);
   const [started, setStarted] = useState(false);
   const [step, setStep] = useState(0);
@@ -125,7 +127,7 @@ export default function WorksheetWorkflow({
     {question.helper_text && <details className="term-help"><summary>What does this mean?</summary><p>{question.helper_text}</p></details>}
     {sourceImageUrl && <details className="term-help"><summary>View the original worksheet</summary><img className="source-preview" src={sourceImageUrl} alt={`${worksheet.title} on page ${worksheet.source_page}`} loading="lazy" /></details>}
     {question.answer_type === "choice" ? <div className="decision-options">
-      {question.options.map(option => <button key={option} type="button" className="decision-option" disabled={busy || calculating} onClick={() => void record(option)}>{option}<span>→</span></button>)}
+      {question.options.map(option => <button key={option} type="button" className="decision-option" disabled={busy || calculating} onClick={() => void record(option)}>{optionLabel(option)}<span>→</span></button>)}
     </div> : <div className="guided-number">
       <label htmlFor={`worksheet-${question.input_id}`}>Amount</label>
       <input id={`worksheet-${question.input_id}`} type="number" min="0" step="0.01" value={draft} onChange={event => setDraft(event.target.value)} />

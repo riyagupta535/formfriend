@@ -1,5 +1,6 @@
 from typing import Literal
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
+from .languages import QuestionLanguage
 from .agent_models import AgentState, Validation
 
 class SubQuestion(BaseModel):
@@ -125,6 +126,7 @@ class EligibilityWorkflow(BaseModel):
     source_text: str = Field(min_length=1, max_length=15000)
 
 class FormField(BaseModel):
+    option_labels: dict[str, str] = Field(default_factory=dict)
     field_id: str
     question_number: str | None = None
     section_title: str | None = None
@@ -157,7 +159,14 @@ class FormField(BaseModel):
     confirmed: bool = False
     status: Literal["unanswered", "answered", "skipped", "not_applicable", "blocked"] = "unanswered"
 
+class LanguageSelection(BaseModel):
+    model_config = {'extra': 'forbid'}
+    language: QuestionLanguage
+
+
 class Session(BaseModel):
+    language: QuestionLanguage = 'en'
+    _question_presentations: dict = PrivateAttr(default_factory=dict)
     session_id: str
     agent_state: AgentState | None = None
     filename: str
