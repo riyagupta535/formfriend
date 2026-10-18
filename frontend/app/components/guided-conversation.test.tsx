@@ -5,7 +5,9 @@ const calls = vi.hoisted(() => ({start:vi.fn().mockResolvedValue('conversation')
 const tools: Record<string, (params: Record<string, unknown>) => Promise<string>> = {};
 vi.mock('@elevenlabs/react', () => ({
   ConversationProvider: ({ children }: { children: React.ReactNode }) => children,
-  useConversation: (options: {onMessage:typeof calls.onMessage}) => {calls.onMessage=options.onMessage;return ({ status: calls.status, isSpeaking: calls.speaking, getOutputVolume: calls.volume, isMuted: false, startSession: calls.start, sendContextualUpdate:calls.context, endSession: vi.fn(), sendUserMessage: calls.send, sendUserActivity:calls.activity, setMuted:calls.mute });},
+  useConversation: (options: {onMessage:typeof calls.onMessage; onConnect?: () => void}) => {calls.onMessage=options.onMessage;return ({ status: calls.status, isSpeaking: calls.speaking, getOutputVolume: calls.volume, isMuted: false,
+    // Like the real SDK, startSession resolves and the connection then opens (onConnect).
+    startSession: async (...args: unknown[]) => { const result = await calls.start(...args); options.onConnect?.(); return result; }, sendContextualUpdate:calls.context, endSession: vi.fn(), sendUserMessage: calls.send, sendUserActivity:calls.activity, setMuted:calls.mute });},
   useConversationClientTool: (name: string, handler: (params: Record<string, unknown>) => Promise<string>) => { tools[name] = handler; },
 }));
 import GuidedConversation from './guided-conversation';
