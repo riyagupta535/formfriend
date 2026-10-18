@@ -338,7 +338,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
 
   return <section className="guide" aria-label="Talk with Forma">
     <div className="guide-heading">
-      <div><p className="eyebrow">A FRIEND BY YOUR SIDE. ONE QUESTION AT A TIME.</p><h1>Let’s talk <span>it through.</span></h1></div>
+      <h1>Let’s talk <span>it through.</span></h1>
       {complete && <Link className="button primary" href="/review" onClick={() => conversation.endSession()}>Review my answers <span>↗</span></Link>}
     </div>
     <div className="guide-progress">
@@ -385,7 +385,6 @@ function Conversation({ sessionId }: { sessionId: string }) {
             <h2 aria-live="polite">{question.simplified_question}</h2>
             {question.input_type === "date" && <DateEntry key={question.id} busy={saving || starting || conversation.status === "connecting"}
               onSubmit={value => void submitAnswer(value)} />}
-            {question.help_text && <p className="helper-text">{question.help_text}</p>}
             {question.subquestions?.length && !guidedCalculation && !guidedDecision ? <div className="subquestion-guide">
               <strong>Let’s break it down:</strong>
               <ul>{question.subquestions.map((item, index) => <li key={`${question.id}-sub-${index}`}>{item.text}</li>)}</ul>
@@ -443,6 +442,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
               {reference?.page && <p><strong>From page {reference.page}</strong></p>}
               <blockquote>{question.original_text}</blockquote>
             </details>
+            {error && <div className="error-message" role="alert">{error}</div>}
           </div>}
           {state?.status === "complete" && <div className="chat-message chat-friend-current"><h2>You’re all done. Great work!</h2><p>Look over your answers before you download your form.</p></div>}
 
@@ -493,7 +493,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
         <summary>{item.term}</summary><p>{item.explanation}</p>{item.example && <p className="guide-example">For example: {item.example}</p>}
       </details>)}
     </div>}
-    {error && <div className="error-message" role="alert">{error}</div>}
+    {error && (!question || state?.status !== "question") && <div className="error-message" role="alert">{error}</div>}
   </section>;
 }
 

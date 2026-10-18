@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import AnswerInput, { type AnswerField } from "./answer-input";
 import Mascot from "./mascot";
 
@@ -14,14 +14,39 @@ type ReviewSession = {
 };
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+function reviewQuestion(text: string) {
+  return text.trim()
+    .replace(/^(Step\s+\d+\s*:)\s*\([A-Za-z0-9]{1,4}\)\s*/i, "$1 ")
+    .replace(/^\([A-Za-z0-9]{1,4}\)\s*/, "")
+    .replace(/^(?:\d{1,3}[A-Za-z]?|[a-z])[.)]?\s+/, "")
+    .replace(/\bhere\s+Other\s+(?=This may\b)/i, "here. ")
+    .replace(/\s+\d{1,3}(?:\([A-Za-z]\)|[A-Za-z]?)\s*\$\s*(?:(?:and\s+)?(?:Other|Credits?|Adjustments?))?\.?\s*$/i, "")
+    .trim();
+}
+
 export default function ReviewAnswers({ session, onClear }: {session: ReviewSession; onClear: () => void}) {
   const [values, setValues] = useState(() => Object.fromEntries(session.fields.map(f => [f.field_id, f.user_response || ""])));
   const [reviewed, setReviewed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [downloaded, setDownloaded] = useState(false);
+  const downloadCard = useRef<HTMLElement>(null);
+  const [downloadCardHeight, setDownloadCardHeight] = useState(0);
   const missing = session.fields.filter(f => !values[f.field_id]?.trim()).length;
   const filledPdf = !session.document_type || session.document_type === "pdf";
+  useEffect(() => {
+    const card = downloadCard.current;
+    if (!card) return;
+    const measure = () => setDownloadCardHeight(Math.ceil(card.getBoundingClientRect().height));
+    measure();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", measure);
+      return () => window.removeEventListener("resize", measure);
+    }
+    const observer = new ResizeObserver(measure);
+    observer.observe(card);
+    return () => observer.disconnect();
+  }, []);
   function edit(id: string, value: string) {
     setValues(current => ({...current, [id]: value}));
     setReviewed(false); setDownloaded(false); setError("");
@@ -54,17 +79,20 @@ export default function ReviewAnswers({ session, onClear }: {session: ReviewSess
   }
   return <>
     <div className="page-intro"><p className="eyebrow">ONE LAST LOOK, AT YOUR PACE</p><h1>Your answers.<br/><span>Ready when you are.</span></h1><p>Read through everything and make any changes before downloading your PDF.</p></div>
-    <div className="review-layout">
+    <div className="review-layout" style={downloadCardHeight
+      ? ({ "--review-panel-height": `${downloadCardHeight}px` } as CSSProperties)
+      : undefined}>
       <section className="review-card" aria-label="Review all answers" aria-busy={busy}>
         <div className="review-title"><h2>Your answers</h2><span>{session.fields.length - missing} / {session.fields.length} answered</span></div>
-        {session.fields.map((field, index) => <div className="review-field" key={field.field_id}>
-          <label id={`review-${index}-label`} htmlFor={`review-${index}`}><span>{index + 1}</span>{field.original_question}</label>
-          {field.simplified_question && field.simplified_question !== field.original_question && <p className="review-simple">{field.simplified_question}</p>}
-          <AnswerInput id={`review-${index}`} field={field} value={values[field.field_id]} onChange={value => edit(field.field_id, value)} disabled={busy}/>
-          <small>{!values[field.field_id]?.trim() ? "No answer provided · " : ""}{field.source_page > 0 ? `${session.document_type === "image" ? "Screenshot" : "Source page"} ${field.source_page}` : "Source page not provided"}</small>
-        </div>)}
+        <div className="review-fields" role="region" aria-label="Form answers" tabIndex={0}>
+          {session.fields.map((field, index) => <div className="review-field" key={field.field_id}>
+            <label id={`review-${index}-label`} htmlFor={`review-${index}`}><span>{index + 1}</span>{reviewQuestion(field.original_question)}</label>
+            <AnswerInput id={`review-${index}`} field={field} value={values[field.field_id]} onChange={value => edit(field.field_id, value)} disabled={busy}/>
+            {!values[field.field_id]?.trim() && <small>No answer provided</small>}
+          </div>)}
+        </div>
       </section>
-      <aside className="download-card"><Mascot small/><h3>Looking good, friend.</h3>
+      <aside className="download-card" ref={downloadCard}><Mascot small/><h3>Looking good, friend.</h3>
         <p>{!filledPdf ? "Your PDF will be an answer sheet to use alongside your original document. The original document will not be filled." : session.pdf_has_answer_sheet ? "Your original PDF will include filled fields where supported, plus an answer sheet for printed or scanned questions." : "Your answers will be placed in your original PDF’s fillable fields."}</p>
         <div className="document-pill">▤ <span>{session.filename}</span></div>
         {missing > 0 && <p className="review-missing" role="status">{missing} {missing === 1 ? "answer is" : "answers are"} still blank. You can add them now or leave them blank in the PDF.</p>}
