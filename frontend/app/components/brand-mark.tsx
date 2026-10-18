@@ -1,0 +1,7 @@
+/** Small, font-independent speech bubble with a lowercase f. */
+export default function BrandMark() {
+  return <svg className="brand-icon" viewBox="0 0 44 44" aria-hidden="true" focusable="false">
+    <path d="M12 3h20a9 9 0 0 1 9 9v15a9 9 0 0 1-9 9H17L4 43V12a9 9 0 0 1 8-9Z" fill="#24776b" />
+    <path d="M28 10h-4c-5 0-8 3-8 8v1h-4v5h4v10h6V24h5l1-5h-6v-1c0-2 1-3 3-3h3Z" fill="#fff8e8" />
+  </svg>;
+}

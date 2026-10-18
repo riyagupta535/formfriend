@@ -1,5 +1,6 @@
 """Deterministic form state for an externally configured ElevenLabs agent."""
 import json
+import logging
 import math
 import os
 import re
@@ -14,8 +15,10 @@ from collections import Counter
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import ValidationError
 
-from .agent_models import (AgentSessionRequest, AgentState, ExplainRequest, FromUploadRequest, GlossaryEntry,
+from .agent_models import (AgentSessionRequest, AgentState, ExplainRequest, FromUploadRequest, GlossaryEntry, TeachRequest,
                            SaveAgentAnswer, SkipAgentQuestion, Validation)
+from .answer_judge import judge_answer, should_judge
+from .teaching import lesson_for
 from .models import FormField, Session
 from .dates import normalize_date
 from .text_utils import strip_form_reference
@@ -26,6 +29,8 @@ def authorize(authorization: str | None = Header(default=None)):
     if secret and not secrets.compare_digest((authorization or '').encode(), ('Bearer ' + secret).encode()):
         raise HTTPException(401, 'Agent tool authentication required.')
 
+
+logger = logging.getLogger('formfriend.agent')
 
 router = APIRouter(prefix='/agent', tags=['agent tools'], dependencies=[Depends(authorize)])
 
@@ -60,7 +65,10 @@ def check_rules(question, value):
         if kind == 'person_name' and (not re.search(r'[^\W\d_]', value) or re.search(r'\d', value)):
             fail("Enter a name using letters rather than numbers or unrelated text.")
         if kind == 'social_security_number' and not _valid_ssn(value):
-            fail('Enter a 9-digit Social Security number in the format XXX-XX-XXXX.')
+            raise HTTPException(
+                422,
+                'Enter a valid 9-digit Social Security number in the format XXX-XX-XXXX.',
+            )
         if kind == 'employer_identification_number' and not re.fullmatch(r'\d{2}-?\d{7}', value):
             fail('Enter a 9-digit employer identification number in the format XX-XXXXXXX.')
         if kind == 'taxpayer_identification_number' and not (
@@ -77,6 +85,10 @@ def check_rules(question, value):
             fail('Enter a 5-digit ZIP code, optionally followed by four more digits.')
         if kind == 'us_state_code' and not re.fullmatch(r'[A-Za-z]{2}', value):
             fail('Enter the two-letter state abbreviation.')
+        if kind == 'street_address' and not (re.search(r'\d', value) and re.search(r'[^\W\d_]{2,}', value)):
+            fail('Enter the street address with the house or building number and the street name, like 123 Main Street.')
+        if kind == 'city_state_zip' and not _valid_city_state_zip(value):
+            fail('Enter the city, state, and ZIP code together, like Los Angeles, CA 90024.')
         if kind == 'year' and not re.fullmatch(r'\d{4}', value):
             fail('Enter a four-digit year.')
         if kind in {'past_date', 'future_date'}:
@@ -85,6 +97,63 @@ def check_rules(question, value):
                 fail('Enter a date before today.')
             if kind == 'future_date' and parsed <= date.today():
                 fail('Enter a date after today.')
+
+
+US_STATES = {
+    'AL': 'alabama', 'AK': 'alaska', 'AZ': 'arizona', 'AR': 'arkansas', 'CA': 'california', 'CO': 'colorado',
+    'CT': 'connecticut', 'DE': 'delaware', 'DC': 'district of columbia', 'FL': 'florida', 'GA': 'georgia',
+    'HI': 'hawaii', 'ID': 'idaho', 'IL': 'illinois', 'IN': 'indiana', 'IA': 'iowa', 'KS': 'kansas',
+    'KY': 'kentucky', 'LA': 'louisiana', 'ME': 'maine', 'MD': 'maryland', 'MA': 'massachusetts',
+    'MI': 'michigan', 'MN': 'minnesota', 'MS': 'mississippi', 'MO': 'missouri', 'MT': 'montana',
+    'NE': 'nebraska', 'NV': 'nevada', 'NH': 'new hampshire', 'NJ': 'new jersey', 'NM': 'new mexico',
+    'NY': 'new york', 'NC': 'north carolina', 'ND': 'north dakota', 'OH': 'ohio', 'OK': 'oklahoma',
+    'OR': 'oregon', 'PA': 'pennsylvania', 'RI': 'rhode island', 'SC': 'south carolina', 'SD': 'south dakota',
+    'TN': 'tennessee', 'TX': 'texas', 'UT': 'utah', 'VT': 'vermont', 'VA': 'virginia', 'WA': 'washington',
+    'WV': 'west virginia', 'WI': 'wisconsin', 'WY': 'wyoming', 'PR': 'puerto rico', 'GU': 'guam',
+    'VI': 'virgin islands', 'AS': 'american samoa', 'MP': 'northern mariana islands',
+}
+
+
+def _valid_city_state_zip(value: str) -> bool:
+    """A city name, a US state (code or name), and a 5- or 9-digit ZIP, in any reasonable order."""
+    zip_code = re.search(r'\b\d{5}(?:-\d{4})?\b', value)
+    if not zip_code:
+        return False
+    rest = (value[:zip_code.start()] + ' ' + value[zip_code.end():]).lower()
+    words = re.findall(r'[a-z]+', rest)
+    state = next((name for name in US_STATES.values() if re.search(rf'\b{name}\b', rest)), None)
+    if state is None:
+        code = next((w for w in words if len(w) == 2 and w.upper() in US_STATES), None)
+        if code is None:
+            return False
+        words.remove(code)
+    else:
+        for part in state.split():
+            words.remove(part)
+    return any(len(word) >= 2 for word in words)  # something left for the city
+
+
+def infer_validation_kind(text: str, input_type: str) -> str:
+    """Fallback when question generation left the kind as "none": recognise common fields by their wording."""
+    if input_type not in {'text', 'address'}:
+        return 'none'
+    lowered = text.lower()
+    if re.search(r'social security|\bssn\b', lowered):
+        return 'social_security_number'
+    if re.search(r'\bcity\b', lowered) and re.search(r'\bzip\b|postal', lowered):
+        return 'city_state_zip'
+    if re.search(r'\bzip\b|postal code', lowered):
+        return 'us_postal_code'
+    if re.search(r'e-?mail', lowered):
+        return 'email'
+    if re.search(r'phone|telephone', lowered):
+        return 'phone_number'
+    if re.search(r'\baddress\b', lowered) and not re.search(r'\bname\b|\bcity\b', lowered):
+        return 'street_address'
+    if (re.search(r'\b(first|last|middle|full|legal)\s+name\b|^\(?[a-z]?\)?\s*name\b', lowered)
+            and not re.search(r'employer|business|company|organization|bank', lowered)):
+        return 'person_name'
+    return 'none'
 
 
 def _valid_ssn(value: str) -> bool:
@@ -210,6 +279,9 @@ def sync_source_simplifications(session):
             question.simplified_question = simplified
             question.help_text = source_field.helper_text or source_field.source_context[:2000]
             question.validation = source_field.validation.model_copy(deep=True)
+            if question.validation.kind == 'none':
+                question.validation.kind = infer_validation_kind(
+                    f'{question.original_text} {question.simplified_question}', question.input_type)
             target.simplified_question = simplified
             target.helper_text = source_field.helper_text
             target.subquestions = [item.model_copy(deep=True) for item in source_field.subquestions]
@@ -221,7 +293,7 @@ def sync_source_simplifications(session):
                                              if source_field.pay_period_calculation else None)
             target.eligibility_workflow = (source_field.eligibility_workflow.model_copy(deep=True)
                                            if source_field.eligibility_workflow else None)
-            target.validation = source_field.validation.model_copy(deep=True)
+            target.validation = question.validation.model_copy(deep=True)
             target.simplification_status = 'complete'
             target.simplification_confidence = source_field.simplification_confidence
         elif source_field.simplification_status == 'failed':
@@ -338,6 +410,9 @@ async def create_agent_session(body: AgentSessionRequest):
     source = get_session(body.document_session_id) if body.document_session_id else None
     if source and source.agent_state is not None:
         raise HTTPException(409, 'Use an original document session when attaching a question list.')
+    for question in body.questions:
+        if question.validation.kind == 'none':
+            question.validation.kind = infer_validation_kind(f'{question.original_text} {question.simplified_question}', question.input_type)
     fields, used_refs = [], set()
     for question in body.questions:
         matches = [f for f in source.fields if question.pdf_field_name and
@@ -472,6 +547,14 @@ async def save_answer(key: str, body: SaveAgentAnswer):
     if field.status in {'blocked', 'not_applicable'}:
         raise HTTPException(409, 'This question is not currently applicable. Get the next question first.')
     value = encoded(question, body.value)
+    check = await check_meaning(session, question, body.raw_response, decoded(question, value))
+    if check.get('verdict') == 'help':
+        # They asked something instead of answering: teach it, save nothing, stay on this question.
+        lesson = await teach(session, question, check['help_topic'] or body.raw_response or str(body.value))
+        return {'saved': False, 'asked_for_help': True, 'question_id': question.id, 'lesson': lesson,
+                'next': next_question(session)}
+    # Another save may have landed while the model was thinking; never overwrite newer answers.
+    check_revision(session, body.revision)
     invalidated = invalidate_dependents(session, question.id) if field.user_response != value else []
     field.user_response = field.interpreted_value = value
     field.confirmed = False
@@ -479,8 +562,60 @@ async def save_answer(key: str, body: SaveAgentAnswer):
     session.agent_state.raw_responses[question.id] = body.raw_response
     session.agent_state.revision += 1
     refresh_applicability(session)
-    return {'saved': True, 'question_id': question.id, 'value': decoded(question, value),
+    return {'saved': True, 'question_id': question.id, 'value': decoded(question, value), 'check': check,
             'invalidated_question_ids': invalidated, 'next': next_question(session)}
+
+
+async def check_meaning(session, question, raw_response, value):
+    """Have the model reason about whether the answer really answers the question; 422 with a re-ask if not."""
+    if not should_judge(question):
+        return {'judged': False, 'reason': 'Checked by exact rules only.'}
+    fields = {f.field_id: f for f in session.fields}
+    earlier = {q.simplified_question: decoded(q, fields[q.id].user_response)
+               for q in session.agent_state.questions
+               if q.id != question.id and fields[q.id].status == 'answered'}
+    try:
+        judgement = await judge_answer(question, raw_response, value, dict(list(earlier.items())[-8:]))
+    except Exception as error:  # Provider trouble must not trap someone mid-form; format rules still applied.
+        logger.warning('Answer check unavailable for %s: %s', question.id, type(error).__name__)
+        return {'judged': False, 'reason': 'The answer check was unavailable, so only format rules were applied.'}
+    if judgement.verdict == 'help':
+        return {'judged': True, 'verdict': 'help', 'help_topic': judgement.help_topic, 'reasoning': judgement.reasoning}
+    if judgement.verdict != 'accept':
+        raise HTTPException(422, judgement.message)
+    return {'judged': True, 'verdict': judgement.verdict, 'reasoning': judgement.reasoning}
+
+
+async def teach(session, question, asked=''):
+    """A lesson for this question (or needed=False), saved to the person's learned list when taught."""
+    try:
+        lesson = (await lesson_for(question, asked)).model_dump()
+    except Exception as error:
+        logger.warning('Teaching unavailable for %s: %s', question.id, type(error).__name__)
+        if not asked:
+            return {'needed': False, 'unavailable': True}
+        # They asked: fall back to the form's own help text rather than leaving them with nothing.
+        help_text = question.help_text.strip()
+        if not help_text:
+            raise HTTPException(502, 'I couldn’t look that up right now. You can open “What the form says”, '
+                                     'or ask the office that sent the form.') from None
+        lesson = {'needed': True, 'title': 'What the form says', 'explanation': help_text[:900],
+                  'example': '', 'why_it_matters': '', 'trigger': 'asked', 'unavailable': True}
+    if lesson['needed']:
+        entry = GlossaryEntry(term=lesson['title'] or question.simplified_question[:120], explanation=lesson['explanation'],
+                              example=lesson['example'], why_it_matters=lesson['why_it_matters'], question_id=question.id)
+        session.agent_state.glossary[entry.term.lower()] = entry
+    return lesson
+
+
+@router.post('/sessions/{key}/teach', operation_id='teach_concept')
+async def teach_concept(key: str, body: TeachRequest):
+    """Teach what a question means. Without user_question, the model decides whether it needs teaching."""
+    session = get_agent_session(key)
+    question, _ = find_question(session, body.question_id)
+    if not os.getenv('GEMINI_API_KEY') and not body.user_question.strip():
+        return {'needed': False, 'unavailable': True}
+    return await teach(session, question, body.user_question)
 
 
 @router.post('/sessions/{key}/skip', operation_id='skip_question')

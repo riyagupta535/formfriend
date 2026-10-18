@@ -275,6 +275,20 @@ def test_closed_validation_kinds_reject_bad_text_without_advancing(client,kind,b
     assert answer(client,key,'value',good,revision=0).status_code==200
 
 
+def test_ssn_validation_explains_that_a_formatted_but_reserved_number_is_invalid(client):
+    key=create(client,[question('ssn',validation={
+        'kind':'social_security_number',
+        'message':'Please enter your 9-digit Social Security number, formatted as XXX-XX-XXXX.',
+    })])
+
+    rejected=answer(client,key,'ssn','999-99-9999',revision=0)
+
+    assert rejected.status_code==422
+    assert rejected.json()['detail']==(
+        'Enter a valid 9-digit Social Security number in the format XXX-XX-XXXX.'
+    )
+
+
 def test_explain_term_saves_agent_explanation_to_glossary(client):
     key=create(client,[llm_question()])
     before=client.get(f'/agent/sessions/{key}/next-question').json()['revision']
@@ -299,7 +313,7 @@ def test_elevenlabs_client_tools_match_backend_routes():
     from app.elevenlabs_agent import PROMPT, tool_configs
     configs=[body['tool_config'] for body in tool_configs()]
     names={c['name'] for c in configs}
-    assert names=={'get_next_question','save_answer','skip_question','get_question_context','explain_term'}
+    assert names=={'get_next_question','save_answer','skip_question','get_question_context','teach_concept'}
     operation_ids={op.get('operationId') for path in app.openapi()['paths'].values() for op in path.values()}
     assert names<=operation_ids
     for config in configs:
@@ -472,6 +486,136 @@ def test_next_question_includes_specialized_workflow_metadata():
     assert result['question']['worksheet']['worksheet_id'] == 'deductions'
 
 
+def test_address_and_city_state_zip_are_checked_even_without_a_generated_kind(client):
+    # Reproduces a W-4 session where typed answers skipped the agent: the questions arrived with kind "none".
+    key=create(client,[question('ssn',original_text='(b) Social security number'),
+                       question('street',original_text='Address'),
+                       question('city',original_text='City or town, state, and ZIP code',
+                                simplified_question='What is your current city, state, and ZIP code?')])
+    kinds={q.id:q.validation.kind for q in sessions[key][1].agent_state.questions}
+    assert kinds=={'ssn':'social_security_number','street':'street_address','city':'city_state_zip'}
+    assert answer(client,key,'ssn','hfds').status_code==422
+    assert answer(client,key,'street','10995').status_code==422
+    assert answer(client,key,'street','10995 Le Conte Ave').status_code==200
+    rejected=answer(client,key,'city','le conte street')
+    assert rejected.status_code==422 and 'city, state, and ZIP' in rejected.json()['detail']
+    assert answer(client,key,'city','Los Angeles, CA 90024').status_code==200
+
+
+def test_name_inference_skips_organisations(client):
+    from app.agent_tools import infer_validation_kind
+    assert infer_validation_kind('(a) First name and middle initial','text')=='person_name'
+    assert infer_validation_kind("Employer's name and address",'text')=='none'
+    assert infer_validation_kind('Number of children','number')=='none'
+
+
+def stub_judge(monkeypatch, verdict, message='', calls=None):
+    from app import agent_tools
+    from app.answer_judge import Judgement
+    monkeypatch.setenv('GEMINI_API_KEY', 'test-key')
+    async def judge(question, raw_response, value, earlier):
+        if calls is not None:
+            calls.append((question.id, raw_response, value, earlier))
+        return Judgement(reasoning='The question asks for city, state, and ZIP; the answer is only a street.', verdict=verdict, message=message)
+    monkeypatch.setattr(agent_tools, 'judge_answer', judge)
+
+
+def test_meaning_check_reasks_and_does_not_advance(client, monkeypatch):
+    calls=[]
+    key=create(client,[question('name',original_text='Last name'),question('where',original_text='Where do you live?')])
+    stub_judge(monkeypatch,'accept')
+    assert answer(client,key,'name','Lopez').status_code==200  # earlier answer, passed to the judge as context
+    stub_judge(monkeypatch,'reask','That sounds like a street. Which city, state, and ZIP code do you live in?',calls)
+    before=client.get(f'/agent/sessions/{key}/next-question').json()
+    rejected=answer(client,key,'where','le conte street',raw_response='le conte street')
+    assert rejected.status_code==422
+    assert rejected.json()['detail']=='That sounds like a street. Which city, state, and ZIP code do you live in?'
+    after=client.get(f'/agent/sessions/{key}/next-question').json()
+    assert after['question']['id']=='where' and after['revision']==before['revision']
+    assert calls[-1][0]=='where' and calls[-1][1]=='le conte street'
+    assert calls[-1][3]=={'Please answer name?':'Lopez'}
+
+
+def test_meaning_check_accepts_with_reasoning(client, monkeypatch):
+    stub_judge(monkeypatch,'accept')
+    key=create(client,[question('where',original_text='Where do you live?')])
+    saved=answer(client,key,'where','Los Angeles').json()
+    assert saved['check']['judged'] is True and saved['check']['reasoning']
+
+
+def test_meaning_check_skips_exact_option_questions(client, monkeypatch):
+    calls=[]
+    stub_judge(monkeypatch,'reask','should not be used',calls)
+    key=create(client,[question('ok',input_type='boolean')])
+    assert answer(client,key,'ok',True).status_code==200
+    assert calls==[]
+
+
+def test_meaning_check_outage_still_saves_with_format_rules(client, monkeypatch):
+    from app import agent_tools
+    monkeypatch.setenv('GEMINI_API_KEY','test-key')
+    async def broken(*args):
+        raise RuntimeError('provider down')
+    monkeypatch.setattr(agent_tools,'judge_answer',broken)
+    key=create(client,[question('street',original_text='Address')])
+    assert answer(client,key,'street','10995').status_code==422  # format rules still apply
+    saved=answer(client,key,'street','10995 Le Conte Ave').json()
+    assert saved['saved'] and saved['check']['judged'] is False
+
+
+def stub_lesson(monkeypatch, calls=None):
+    from app import agent_tools
+    from app.teaching import Lesson
+    monkeypatch.setenv('GEMINI_API_KEY', 'test-key')
+    async def lesson(question, person_asked=''):
+        if calls is not None:
+            calls.append((question.id, person_asked))
+        return Lesson(needed=True, title='What exempt means', explanation='No federal tax is taken out of your pay.',
+                      example='$50 stays in your paycheck.', why_it_matters='It changes what you owe later.',
+                      trigger='asked' if person_asked else 'auto')
+    monkeypatch.setattr(agent_tools, 'lesson_for', lesson)
+
+
+def test_teach_decides_and_saves_to_learned_list(client, monkeypatch):
+    calls=[]
+    stub_lesson(monkeypatch, calls)
+    key=create(client,[question('ex',original_text='Exemption from withholding')])
+    before=client.get(f'/agent/sessions/{key}/next-question').json()['revision']
+    lesson=client.post(f'/agent/sessions/{key}/teach',json={'question_id':'ex'}).json()
+    assert lesson['needed'] and lesson['title']=='What exempt means' and calls==[('ex','')]
+    terms=client.get(f'/agent/sessions/{key}/glossary').json()['terms']
+    assert terms[0]['why_it_matters']=='It changes what you owe later.'
+    assert client.get(f'/agent/sessions/{key}/next-question').json()['revision']==before
+
+
+def test_question_instead_of_answer_teaches_and_stays(client, monkeypatch):
+    calls=[]
+    stub_lesson(monkeypatch, calls)
+    from app import agent_tools
+    from app.answer_judge import Judgement
+    async def asks_for_help(question, raw_response, value, earlier):
+        return Judgement(reasoning='The person is asking what exempt means.', verdict='help', help_topic='what exempt means')
+    monkeypatch.setattr(agent_tools,'judge_answer',asks_for_help)
+    key=create(client,[question('ex',original_text='Exemption from withholding'),question('next')])
+    result=answer(client,key,'ex','what does exempt even mean',raw_response='what does exempt even mean').json()
+    assert result['saved'] is False and result['asked_for_help'] is True
+    assert result['lesson']['title']=='What exempt means' and calls==[('ex','what exempt means')]
+    assert result['next']['question']['id']=='ex'
+    assert sessions[key][1].fields[0].status=='unanswered'
+
+
+def test_teach_without_provider_falls_back_to_form_text_when_asked(client, monkeypatch):
+    from app import agent_tools
+    monkeypatch.setenv('GEMINI_API_KEY','test-key')
+    async def broken(*args):
+        raise RuntimeError('provider down')
+    monkeypatch.setattr(agent_tools,'lesson_for',broken)
+    key=create(client,[question('ex',help_text='Write Exempt only if you owed no tax last year.'),question('plain')])
+    assert client.post(f'/agent/sessions/{key}/teach',json={'question_id':'ex'}).json()=={'needed':False,'unavailable':True}
+    asked=client.post(f'/agent/sessions/{key}/teach',json={'question_id':'ex','user_question':'what is this'}).json()
+    assert asked['needed'] and 'owed no tax' in asked['explanation']
+    assert client.post(f'/agent/sessions/{key}/teach',json={'question_id':'plain','user_question':'huh'}).status_code==502
+
 def test_date_entry_is_normalized_before_saving_and_bad_dates_leave_progress_unchanged(client):
     key=create(client,[question('date',input_type='date')])
     invalid=answer(client,key,'date','2/30/2000')
@@ -481,3 +625,31 @@ def test_date_entry_is_normalized_before_saving_and_bad_dates_leave_progress_unc
     assert saved.status_code==200
     assert saved.json()['value']=='2000-01-02'
     assert client.get(f'/sessions/{key}').json()['fields'][0]['user_response']=='2000-01-02'
+
+
+def test_background_simplification_keeps_inferred_address_validation(client):
+    field = FormField(
+        field_id='street', original_question='Street address',
+        simplified_question='Street address', source_page=1, source_rect=[],
+        simplification_status='pending',
+    )
+    source = Session(
+        session_id='pending-address', filename='form.pdf', mode='gemini',
+        simplification_status='running', fields=[field],
+    )
+    sessions[source.session_id] = (time.monotonic(), source)
+    documents[source.session_id] = b'%PDF-synthetic'
+    created = client.post('/agent/sessions/from-upload', json={'document_session_id': source.session_id})
+    assert created.status_code == 200
+    key = created.json()['session_id']
+
+    field.simplified_question = 'What is your street address?'
+    field.validation = Validation(kind='none')
+    field.simplification_status = 'complete'
+    source.simplification_status = 'complete'
+
+    ready = client.get(f'/agent/sessions/{key}/next-question')
+    assert ready.json()['question']['validation']['kind'] == 'street_address'
+    assert answer(client, key, 'street', 'Main Street', revision=0).status_code == 422
+    assert client.get(f'/agent/sessions/{key}/next-question').json()['revision'] == 0
+    assert answer(client, key, 'street', '123 Main Street', revision=0).status_code == 200

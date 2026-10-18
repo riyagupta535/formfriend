@@ -32,6 +32,8 @@ VALIDATION_KINDS = [
     "email",
     "phone_number",
     "us_postal_code",
+    "street_address",
+    "city_state_zip",
     "us_state_code",
     "integer",
     "decimal_number",
@@ -52,7 +54,8 @@ Rules:
 - Preserve names, numbers, dates, money thresholds, and legal distinctions.
 - Preserve supplied answer choices exactly and in the same order.
 - Classify the expected answer using exactly one supported validation kind. Use "none" when no safe deterministic rule applies.
-- Validation kinds are closed: none, person_name, social_security_number, employer_identification_number, taxpayer_identification_number, email, phone_number, us_postal_code, us_state_code, integer, decimal_number, year, past_date, and future_date.
+- Validation kinds are closed: none, person_name, social_security_number, employer_identification_number, taxpayer_identification_number, email, phone_number, us_postal_code, us_state_code, street_address, city_state_zip, integer, decimal_number, year, past_date, and future_date.
+- Use street_address for a street/home address line (number and street) and city_state_zip for a combined city, state, and ZIP field.
 - Use taxpayer_identification_number only when either an SSN or EIN is accepted. Do not confuse a field identifier or account number with a government identifier.
 - Only set numeric or length limits that are explicitly printed in the source. Otherwise use null. Write a short, plain validation message that tells the user what format is expected without exposing or inventing personal data.
 - Do not answer the question and do not give legal, tax, or benefits advice.
@@ -368,7 +371,7 @@ def _validate_batch(batch: SimplificationBatch, fields: list[FormField]) -> None
         text_kinds = {
             "person_name", "social_security_number", "employer_identification_number",
             "taxpayer_identification_number", "email", "phone_number",
-            "us_postal_code", "us_state_code", "year",
+            "us_postal_code", "us_state_code", "year", "street_address", "city_state_zip",
         }
         if validation.kind in text_kinds and source.answer_type != "text":
             raise ValueError("Gemini selected a text validator for a non-text field.")
@@ -488,13 +491,36 @@ def _validate_batch(batch: SimplificationBatch, fields: list[FormField]) -> None
             raise ValueError("A decision tree does not cover every original option.")
 
 
+def _validation_retry_feedback(error: ValueError, fields: list[FormField]) -> str:
+    detail = str(error)[:1000]
+    if "decision tree" in detail.lower() or "decision branch" in detail.lower():
+        options = [
+            option
+            for field in fields
+            for option in _answer_options(field)
+        ]
+        return (
+            "Your previous decision tree was invalid because it did not resolve every "
+            f"original option. Return a corrected tree using these exact {len(options)} "
+            f"options: {json.dumps(options, ensure_ascii=False)}. Use additional decision "
+            "nodes when needed; every option must be reachable as a terminal_option, and "
+            "each terminal_option must exactly match one of the listed options. "
+            f"Validation error: {detail}"
+        )
+    return (
+        "Your previous response failed validation. Correct the response without changing "
+        f"the source meaning or original answer options. Validation error: {detail}"
+    )
+
+
 async def _request_batch(
     client: httpx.AsyncClient,
     fields: list[FormField],
     max_tokens: int = INITIAL_MAX_TOKENS,
+    correction_feedback: str | None = None,
 ) -> SimplificationBatch:
     model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
-    request_text = (
+    base_request_text = (
         json.dumps(
             {"fields": _request_fields(fields)},
             ensure_ascii=False,
@@ -503,6 +529,9 @@ async def _request_batch(
         + "\n\n"
         + OUTPUT_INSTRUCTIONS
     )
+    request_text = base_request_text
+    if correction_feedback:
+        request_text += "\n\nCORRECTION REQUIRED:\n" + correction_feedback
     cache_key = response_key({
         "base_url": os.getenv(
             "GEMINI_BASE_URL",
@@ -511,7 +540,8 @@ async def _request_batch(
         "model": model,
         "thinking_level": os.getenv("GEMINI_THINKING_LEVEL", "minimal"),
         "system_prompt": SYSTEM_PROMPT,
-        "request_text": request_text,
+        # Corrective retries still populate the cache for the original request.
+        "request_text": base_request_text,
         "response_schema": RESPONSE_SCHEMA,
     })
     cached_content = get_response(cache_key)
@@ -584,12 +614,18 @@ async def _request_with_retry(
     max_tokens = INITIAL_MAX_TOKENS
     attempt = 0
     rate_limit_attempt = 0
+    correction_feedback: str | None = None
     while attempt < MAX_ATTEMPTS:
         retry_after_delay: float | None = None
         rate_limited = False
         async with semaphore:
             try:
-                return await _request_batch(client, fields, max_tokens=max_tokens)
+                return await _request_batch(
+                    client,
+                    fields,
+                    max_tokens=max_tokens,
+                    correction_feedback=correction_feedback,
+                )
             except httpx.ReadTimeout:
                 # A second full read timeout would keep a
                 # background session pending for too long without improving UX.
@@ -639,6 +675,8 @@ async def _request_with_retry(
                 )
                 if isinstance(error, OutputLimitError):
                     max_tokens = min(max_tokens * 2, MAX_MAX_TOKENS)
+                elif isinstance(error, ValueError) and not isinstance(error, ValidationError):
+                    correction_feedback = _validation_retry_feedback(error, fields)
 
         if rate_limited:
             delay = min(

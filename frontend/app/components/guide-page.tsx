@@ -17,13 +17,13 @@ export default function GuidePage() {
     if (!key) { setReady(true); return; }
     // Only agent sessions (created from generated questions) can be guided.
     fetch(`${API}/agent/sessions/${key}/next-question`).then(r => { if (r.ok) setSessionId(key); })
-      .catch(() => setError("Can’t reach Forma. Make sure the backend is running on port 8000."))
+      .catch(() => setError("Can’t reach forma. Make sure the backend is running on port 8000."))
       .finally(() => setReady(true));
   }, []);
   async function trySample() {
     setError("");
     try { setSessionId(await startSampleSession()); }
-    catch (e) { setError(e instanceof TypeError ? "Can’t reach Forma. Make sure the backend is running on port 8000." : (e as Error).message); }
+    catch (e) { setError(e instanceof TypeError ? "Can’t reach forma. Make sure the backend is running on port 8000." : (e as Error).message); }
   }
   return <><Header compact /><main className="workflow guide-workflow"><Steps active={1} />
     {!ready ? <div className="empty-state" role="status">Finding your form…</div>

@@ -29,6 +29,8 @@ ValidationKind = Literal[
     'email',
     'phone_number',
     'us_postal_code',
+    'street_address',
+    'city_state_zip',
     'us_state_code',
     'integer',
     'decimal_number',
@@ -90,7 +92,7 @@ class AgentQuestion(BaseModel):
         text_kinds = {
             'person_name', 'social_security_number', 'employer_identification_number',
             'taxpayer_identification_number', 'email', 'phone_number',
-            'us_postal_code', 'us_state_code', 'year',
+            'us_postal_code', 'us_state_code', 'year', 'street_address', 'city_state_zip',
         }
         if self.validation.kind in text_kinds and self.input_type not in {'text', 'address'}:
             raise ValueError('This validation kind requires a text answer.')
@@ -168,7 +170,15 @@ class GlossaryEntry(BaseModel):
     term: str
     explanation: str
     example: str = ''
+    why_it_matters: str = ''
     question_id: str
+
+
+class TeachRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    question_id: str = Field(min_length=1, max_length=128)
+    # What the person asked, in their words. Empty means "decide whether this question needs teaching".
+    user_question: str = Field(default='', max_length=500)
 
 
 class ExplainRequest(BaseModel):

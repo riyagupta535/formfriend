@@ -26,7 +26,8 @@ type NextState = {
   session_id: string; revision: number; status: "loading" | "question" | "complete" | "blocked";
   question: Question | null; progress: Record<string, number>; prior_answers?: Record<string, string>;
 };
-type Learned = { term: string; explanation: string; example: string };
+type Learned = { term: string; explanation: string; example: string; why_it_matters?: string };
+type Lesson = { needed: boolean; title?: string; explanation?: string; example?: string; why_it_matters?: string; trigger?: "auto" | "asked" };
 type Past = { id: string; question: string; answer: string | null };
 
 function showAnswer(value: string | null) {
@@ -93,7 +94,8 @@ async function appRequest(path: string, init?: RequestInit) {
 function Conversation({ sessionId }: { sessionId: string }) {
   const [state, setState] = useState<NextState | null>(null);
   const [learned, setLearned] = useState<Learned[]>([]);
-  const [said, setSaid] = useState({ friend: "", you: "" });
+  const [lesson, setLesson] = useState<{ questionId: string; lesson: Lesson } | null>(null);
+  const [said, setSaid] = useState<{ friend: string; you: string; rejected?: boolean }>({ friend: "", you: "" });
   const [past, setPast] = useState<Past[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [transcriptOpen, setTranscriptOpen] = useState(false);
@@ -123,7 +125,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
       setSaid(current => source === "user" ? { ...current, you: text } : { friend: text, you: "" });
     },
     onError: message => setError(typeof message === "string" && /permission|notallowed/i.test(message)
-      ? "Forma needs your microphone to listen. Allow the microphone in your browser (look for the icon next to the web address), then press Start talking again."
+      ? "Fomy needs your microphone to listen. Allow the microphone in your browser (look for the icon next to the web address), then press Start talking again."
       : typeof message === "string" ? message : "The voice guide had a problem. Please try again."),
   });
   const live = conversation.status === "connected";
@@ -202,7 +204,9 @@ function Conversation({ sessionId }: { sessionId: string }) {
     try { value = JSON.parse(raw); } catch { value = raw; } // Unquoted free text is still text.
     const result = await tool(`${sessionId}/answers`, post({
       question_id: params.question_id, value, raw_response: String(params.raw_response ?? ""), revision: revision.current }));
-    if (result.ok) {
+    if (result.ok && result.body.saved === false && result.body.lesson) {
+      showLesson(String(params.question_id), result.body.lesson);
+    } else if (result.ok) {
       remember(state?.question, String(params.raw_response ?? params.value_json ?? ""));
       track(result.body.next);
     }
@@ -218,12 +222,20 @@ function Conversation({ sessionId }: { sessionId: string }) {
   });
   useConversationClientTool("get_question_context", async (params: Record<string, unknown>) =>
     (await tool(`${sessionId}/questions/${encodeURIComponent(String(params.question_id))}/context`)).text);
-  useConversationClientTool("explain_term", async (params: Record<string, unknown>) => {
-    const entry = { term: String(params.term ?? "").trim(), explanation: String(params.explanation ?? "").trim(), example: String(params.example ?? "").trim() };
-    const result = await tool(`${sessionId}/explain`, post({ question_id: params.question_id, ...entry }));
-    if (result.ok) setLearned(current => [entry, ...current.filter(item => item.term.toLowerCase() !== entry.term.toLowerCase())]);
-    return result.text;
-  });
+  // Lessons show in the speech bubble and join the "Things you learned" list.
+  function showLesson(questionId: string, next: Lesson) {
+    if (!next.needed || !next.explanation) return;
+    setLesson({ questionId, lesson: next });
+    const entry = { term: next.title || "About this question", explanation: next.explanation, example: next.example ?? "", why_it_matters: next.why_it_matters ?? "" };
+    setLearned(current => [entry, ...current.filter(item => item.term.toLowerCase() !== entry.term.toLowerCase())]);
+  }
+  async function askToTeach(questionId: string, userQuestion = "") {
+    const result = await tool(`${sessionId}/teach`, post({ question_id: questionId, user_question: userQuestion }));
+    if (result.ok) showLesson(questionId, result.body);
+    return result;
+  }
+  useConversationClientTool("teach_concept", async (params: Record<string, unknown>) =>
+    (await askToTeach(String(params.question_id), String(params.user_question ?? ""))).text);
 
   async function start(): Promise<boolean> {
     if (live) return true;
@@ -239,14 +251,16 @@ function Conversation({ sessionId }: { sessionId: string }) {
       const response = await fetch(`${API}/voice/agent-session`);
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw Error(typeof body.detail === "string" ? body.detail : "The voice guide could not start.");
-      const firstMessage = latest.body.status === "complete"
+      const firstMessage = !resuming
+        ? "Hi, I’m Fomy. I’ll help you fill out your form, one small question at a time. Ready to start?"
+        : latest.body.status === "complete"
         ? "Your answers are ready to review."
         : latest.body.question?.simplified_question || "Let’s continue with the question we were working on.";
       await conversation.startSession({ signedUrl: body.signed_url, connectionType: "websocket", textOnly: false,
-        ...(resuming ? {overrides: {agent: {firstMessage}}} : {}),
+        overrides: {agent: {firstMessage}},
       });
       setHasStarted(true);
-      conversation.sendContextualUpdate("Apply the same relevance, clarity, and specificity checks to spoken AND typed messages. A typed message can also be a clarification request, not an answer. Ask a follow-up when needed; only save clear answers using save_answer, and follow validation errors without advancing.");
+      conversation.sendContextualUpdate("Your name is Fomy, the friendly guide for forma. Apply the same relevance, clarity, and specificity checks to spoken AND typed messages. A typed message can also be a clarification request, not an answer. Ask a follow-up when needed; only save clear answers using save_answer, and follow validation errors without advancing.");
       if (resuming) conversation.sendContextualUpdate(
         "This is a continuation of the same form after a break. Do not repeat your introduction or ask if the person is ready. " +
         "Your opening message already asks the current question. Use get_next_question for saved progress. " +
@@ -256,7 +270,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
       );
       return true;
     } catch (e) {
-      setError(e instanceof TypeError ? "Can’t reach Forma. Make sure the backend is running on port 8000." : (e as Error).message);
+      setError(e instanceof TypeError ? "Can’t reach forma. Make sure the backend is running on port 8000." : (e as Error).message);
       return false;
     } finally { setStarting(false); connecting.current = false; }
   }
@@ -284,13 +298,22 @@ function Conversation({ sessionId }: { sessionId: string }) {
         raw_response: text,
         revision: revision.current,
       }));
-      if (result.ok) {
+      if (result.ok && result.body.saved === false && result.body.lesson) {
+        // They asked instead of answering: teach, keep the question open, and clear the box for their answer.
+        showLesson(question.id, result.body.lesson);
+        setSaid({ friend: "", you: text });
+        setTyped("");
+      } else if (result.ok) {
         remember(question, text);
         track(result.body.next);
         setTyped("");
         setEditingPrevious(false);
+        setSaid(current => current.rejected ? { friend: "", you: "" } : { ...current, you: "" });
       } else {
-        setError(JSON.parse(result.text).error);
+        const { error: message, status } = JSON.parse(result.text);
+        // A rejected answer is part of the conversation: Forma re-asks in the speech bubble, and the draft stays editable.
+        if (status === 422) setSaid({ friend: message, you: text, rejected: true });
+        else setError(message);
       }
     } catch {
       setError("Your message could not be sent. Your draft is still here; please try again.");
@@ -331,6 +354,21 @@ function Conversation({ sessionId }: { sessionId: string }) {
   const done = (progress.answered ?? 0) + (progress.skipped ?? 0);
   const total = done + (progress.unanswered ?? 0) + (progress.blocked ?? 0);
   const question = state?.question;
+  // A new question starts a fresh bubble: drop the last question's re-ask and "You said" line.
+  // Ordinary agent speech stays, because it usually introduces the new question.
+  const questionId = question?.id;
+  useEffect(() => {
+    if (!questionId || state?.status !== "question") return;
+    let current = true;
+    tool(`${sessionId}/teach`, post({ question_id: questionId })).then(result => {
+      if (current && result.ok) showLesson(questionId, result.body);
+    }).catch(() => { /* Teaching is extra help; the question works without it. */ });
+    return () => { current = false; };
+  }, [questionId, sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const currentLesson = lesson && lesson.questionId === questionId ? lesson.lesson : null;
+  useEffect(() => {
+    setSaid(current => current.rejected ? { friend: "", you: "" } : { ...current, you: "" });
+  }, [questionId]);
   const reference = question?.source_reference;
   const options = question?.input_type === "boolean" && question.options.length === 0
     ? ["Yes", "No"] : question?.options ?? [];
@@ -345,10 +383,10 @@ function Conversation({ sessionId }: { sessionId: string }) {
   const isConnecting = starting || conversation.status === "connecting";
   const presence = isConnecting ? ["connecting", "Getting ready…"]
     : !live ? ["idle", hasStarted ? "Paused" : "Ready when you are"]
-    : conversation.isSpeaking ? ["talking", "Forma is talking"]
+    : conversation.isSpeaking ? ["talking", "Fomy is talking"]
     : conversation.isMuted ? ["muted", "Microphone is off"] : ["listening", "Listening to you"];
 
-  return <section className="guide" aria-label="Talk with Forma">
+  return <section className="guide" aria-label="Talk with Fomy">
     <div className="guide-heading">
       <h1>Let’s talk <span>it through.</span></h1>
       {complete && <Link className="button primary" href="/review" onClick={() => conversation.endSession()}>Review my answers <span>↗</span></Link>}
@@ -386,7 +424,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
     <div className="guide-scene">
       <div className="guide-mascot"><Mascot flipped talking={live && conversation.isSpeaking} mouthOpen={mouthOpen} /></div>
       <div className="guide-bubble">
-        {said.friend && <p className="guide-says" aria-live="polite"><span>Forma</span>{said.friend}</p>}
+        {said.friend && !said.rejected && <p className={`guide-says${said.rejected ? " is-reask" : ""}`} role={said.rejected ? "alert" : undefined} aria-live={said.rejected ? undefined : "polite"}><span>Fomy</span>{said.friend}</p>}
           {state?.status === "loading" && <div className="chat-message chat-friend-current" role="status" aria-live="polite">
             <div className="chat-message-meta"><span className="chat-speaker">Preparing your next step</span></div>
             <h2>Loading this question…</h2>
@@ -395,7 +433,14 @@ function Conversation({ sessionId }: { sessionId: string }) {
           {question && state?.status === "question" && <div className="chat-message chat-friend-current">
             <div className="chat-message-meta"><span className="chat-speaker">Now answering</span>{reference?.section && <span>{reference.section.toUpperCase()}</span>}</div>
             <h2 aria-live="polite">{question.simplified_question}</h2>
-            {standaloneDateQuestion && <DateEntry key={question.id} busy={saving || starting || conversation.status === "connecting"}
+            {currentLesson ? <aside className={`guide-lesson${currentLesson.trigger === "asked" ? " is-asked" : ""}`} aria-live="polite">
+              <span className="guide-lesson-label">{currentLesson.trigger === "asked" ? "Here’s what that means" : "Good to know"}</span>
+              {currentLesson.title && <strong>{currentLesson.title}</strong>}
+              <p>{currentLesson.explanation}</p>
+              {currentLesson.example && <p><em>For example:</em> {currentLesson.example}</p>}
+              {currentLesson.why_it_matters && <p><em>Why it matters:</em> {currentLesson.why_it_matters}</p>}
+            </aside> : null}
+            {standaloneDateQuestion && <DateEntry key={`${question.id}-date`} busy={saving || starting || conversation.status === "connecting"}
               onSubmit={value => void submitAnswer(value)} />}
             {question.subquestions?.length && !guidedCalculation && !guidedDecision ? <div className="subquestion-guide">
               <strong>Let’s break it down:</strong>
@@ -449,11 +494,12 @@ function Conversation({ sessionId }: { sessionId: string }) {
               <button type="button" className="button secondary" disabled={saving || selectedOptions.length === 0}
                 onClick={() => void submitAnswer(selectedOptions.join(", "))}>Save selected choices</button>
             </div>}
-            <details className="source-details" key={question.id}>
+            <details className="source-details" key={`${question.id}-source`}>
               <summary>ⓘ What the form says</summary>
               {reference?.page && <p><strong>From page {reference.page}</strong></p>}
               <blockquote>{question.original_text}</blockquote>
             </details>
+            {said.rejected && <p className="guide-says is-reask" role="alert"><span>Fomy</span>{said.friend}</p>}
             {error && <div className="error-message" role="alert">{error}</div>}
             {!editingPrevious && <div className="question-skip-row">
               <button type="button" className="text-button" disabled={saving || starting || conversation.status === "connecting"}
@@ -478,11 +524,12 @@ function Conversation({ sessionId }: { sessionId: string }) {
           </div>
           {live && <p className="chat-composer-note">{`You can speak and type in this conversation. Your microphone is ${conversation.isMuted ? "off" : "on"}.`}</p>}
         </>}
-        {!complete && !guidedInteraction && !live && !editingPrevious ? <div className="chat-send-row">
+        {/* Voice stays available on guided steps; only the free-text box is replaced by the step's own inputs. */}
+        {!complete && !live && !editingPrevious ? <div className="chat-send-row">
           <span className="chat-composer-note">Speak or type in the same conversation. Starting requires microphone permission.</span>
           <button type="button" className="button primary" disabled={starting || !state || state.status === "loading" || conversation.status === "connecting"} onClick={() => void start()}>
             {starting || conversation.status === "connecting" ? "Starting…" : hasStarted || (state?.revision ?? 0) > 0 ? "Keep going" : "Start talking"}<span aria-hidden="true">●</span></button>
-        </div> : !guidedInteraction && live && !editingPrevious ? <>
+        </div> : live && !editingPrevious ? <>
           <div className="chat-send-row">
             <button type="button" className="chat-back" onClick={() => conversation.setMuted(!conversation.isMuted)}>{conversation.isMuted ? "Turn microphone on" : "Turn microphone off"}</button>
             <button type="button" className="button secondary" onClick={() => conversation.endSession()}>Take a break</button>
@@ -498,14 +545,15 @@ function Conversation({ sessionId }: { sessionId: string }) {
       <button className="text-button" type="button" aria-expanded={transcriptOpen} aria-controls="guide-transcript" onClick={() => setTranscriptOpen(open => !open)}>Conversation so far</button>
       {transcriptOpen && <div id="guide-transcript" className="guide-transcript" ref={transcript} aria-live="polite">
         {lines.map(line => <div key={line.id} className={`chat-message ${line.speaker === "you" ? "chat-user" : "chat-friend-history"}`}>
-          <span className="chat-speaker">{line.speaker === "you" ? "You" : "Forma"}</span><p>{line.text}</p>
+          <span className="chat-speaker">{line.speaker === "you" ? "You" : "Fomy"}</span><p>{line.text}</p>
         </div>)}
       </div>}
     </section>}
-    {learned.length > 0 && <div className="guide-learned" aria-label="Words you learned">
-      <h3>Words you learned</h3>
+    {learned.length > 0 && <div className="guide-learned" aria-label="Things you learned">
+      <h3>Things you learned</h3>
       {learned.map(item => <details key={item.term} open={item === learned[0]}>
         <summary>{item.term}</summary><p>{item.explanation}</p>{item.example && <p className="guide-example">For example: {item.example}</p>}
+        {item.why_it_matters && <p className="guide-example">Why it matters: {item.why_it_matters}</p>}
       </details>)}
     </div>}
     {error && (!question || state?.status !== "question") && <div className="error-message" role="alert">{error}</div>}

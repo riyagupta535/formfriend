@@ -18,7 +18,7 @@ from .conversation import mode, simplify, simplify_fields
 from .worksheets import calculate_worksheet
 from .table_lookups import lookup_wage_table
 
-app = FastAPI(title="Forma")
+app = FastAPI(title="forma")
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000", "http://localhost:3001"],
                    allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type"])
 # Memory-only sessions; expire after one hour, capped for this local prototype.
@@ -180,7 +180,7 @@ async def upload(file: UploadFile | None = File(default=None),
         field.source_kind in {"text-layer", "ocr"} for field in fields
     ):
         warnings.append(
-            "This PDF is not fillable. Forma can collect answers, but export must use an answer sheet."
+            "This PDF is not fillable. forma can collect answers, but export must use an answer sheet."
         )
     if document_type == "pdf" and any(field.source_kind == "ocr" for field in fields):
         warnings.append(

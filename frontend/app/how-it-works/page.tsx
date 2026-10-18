@@ -3,8 +3,8 @@ import Link from "next/link";
 import { Footer, Header } from "../components/shell";
 
 export const metadata: Metadata = {
-  title: "How it works | Forma",
-  description: "Upload your form, answer simpler questions, and review your document with Forma.",
+  title: "How it works | forma",
+  description: "Upload your form, answer simpler questions, and review your document with forma.",
 };
 
 const steps = [
@@ -42,7 +42,7 @@ export default function HowItWorks() {
           <p>Here’s how we’ll turn your paperwork into smaller, friendlier steps.</p>
           <Link href="/upload" className="button primary">Let’s fill out a form <span>↗</span></Link>
         </div>
-        <section className="how-grid" aria-label="How Forma works">
+        <section className="how-grid" aria-label="How forma works">
           {steps.map((step) => (
             <article key={step.number}>
               <div className="card-top"><span className="feature-icon" aria-hidden="true">{step.icon}</span><span>STEP {step.number}</span></div>

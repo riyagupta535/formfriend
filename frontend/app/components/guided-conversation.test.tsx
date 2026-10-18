@@ -17,12 +17,14 @@ const state = (revision: number, status = 'question') => ({ session_id: 's1', re
 const reply = (body: object, ok = true, status = 200) => Promise.resolve({ ok, status, json: async () => body });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); calls.start.mockClear();calls.context.mockClear();calls.send.mockReset();calls.activity.mockClear();calls.mute.mockClear();calls.status='disconnected';calls.speaking=false; });
 
-it('binds session and revision, parses JSON values, and shows learned words', async () => {
+it('binds session and revision, parses JSON values, and teaches into the learned list', async () => {
   const fetchMock = vi.fn((url: string, init?: RequestInit) => {
     if (url.endsWith('/next-question')) return reply(state(0));
     if (url.endsWith('/glossary')) return reply({ terms: [] });
     if (url.endsWith('/answers')) return reply({ saved: true, next: state(1, 'complete') });
-    if (url.endsWith('/explain')) return reply({ saved: true, term: 'Qualifying child', glossary_size: 1 });
+    if (url.endsWith('/teach')) return JSON.parse(init!.body as string).user_question
+      ? reply({ needed: true, title: 'Qualifying child', explanation: 'A child who meets the form rules.', example: 'Your 10-year-old son.', why_it_matters: 'It can lower the tax taken from your pay.', trigger: 'asked' })
+      : reply({ needed: false });
     throw Error(`unexpected ${url} ${init?.method}`);
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -30,11 +32,15 @@ it('binds session and revision, parses JSON values, and shows learned words', as
   expect(await screen.findByText('How many children under 17?')).toBeTruthy();
   expect(screen.queryByText('A FRIEND BY YOUR SIDE. ONE QUESTION AT A TIME.')).toBeNull();
 
-  await act(async () => { await tools.explain_term({ question_id: 'kids', term: 'Qualifying child', explanation: 'A child who meets the form rules.' }); });
-  expect(JSON.parse(fetchMock.mock.calls.find(([u]) => u.endsWith('/explain'))![1]!.body as string))
-    .toEqual({ question_id: 'kids', term: 'Qualifying child', explanation: 'A child who meets the form rules.', example: '' });
-  expect(screen.getByText('Words you learned')).toBeTruthy();
-  expect(screen.getByText('A child who meets the form rules.')).toBeTruthy();
+  // The automatic check runs for each new question; this one needed no lesson.
+  await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => u.endsWith('/teach'))).toBe(true));
+  expect(screen.queryByText('Things you learned')).toBeNull();
+  await act(async () => { await tools.teach_concept({ question_id: 'kids', user_question: 'what is a qualifying child' }); });
+  const teachCalls = fetchMock.mock.calls.filter(([u]) => u.endsWith('/teach')).map(([, i]) => JSON.parse(i!.body as string));
+  expect(teachCalls).toContainEqual({ question_id: 'kids', user_question: 'what is a qualifying child' });
+  expect(screen.getByText('Things you learned')).toBeTruthy();
+  expect(screen.getByText('Here’s what that means')).toBeTruthy();
+  expect(screen.getAllByText('A child who meets the form rules.').length).toBeGreaterThan(0);
 
   let result = '';
   await act(async () => { result = await tools.save_answer({ question_id: 'kids', value_json: '2', raw_response: 'two kids' }); });
@@ -310,7 +316,7 @@ it('uses the introduction once and resumes at the latest question after a break'
  await screen.findByText('How many children under 17?');
  fireEvent.click(screen.getByRole('button',{name:/Start talking/}));
  await screen.findByRole('button',{name:/Keep going/});
- expect(calls.start.mock.calls[0][0].overrides).toBeUndefined();
+ expect(calls.start.mock.calls[0][0].overrides.agent.firstMessage).toContain("I’m Fomy");
  revision=1;
  fireEvent.click(screen.getByRole('button',{name:/Keep going/}));
  await waitFor(()=>expect(calls.start).toHaveBeenCalledTimes(2));
@@ -360,7 +366,7 @@ it('keeps the typed draft when sending to the live conversation fails',async()=>
  expect(screen.getByRole('alert').textContent).toContain('could not be sent');
 });
 
-it('shows what Forma says in the speech bubble and earlier answers as greyed history', async () => {
+it('shows what Fomy says in the speech bubble and earlier answers as greyed history', async () => {
   vi.stubGlobal('fetch', vi.fn((url: string) => url.endsWith('/sessions/s1')
     ? reply({ fields: [
         { field_id: 'name', simplified_question: 'What is your name?', original_question: 'Name', user_response: 'Maria Lopez', status: 'answered' },
@@ -405,6 +411,51 @@ it('flips the guide mascot and animates its mouth and tongue only during agent s
   calls.speaking = false;
   view.rerender(<GuidedConversation sessionId="s1" />);
   expect(view.container.querySelector('.mascot-mouth')).toBeNull();
+});
+
+it('clears a re-ask and "You said" when the next question arrives', async () => {
+  const first = { ...question, id: 'city', input_type: 'text', simplified_question: 'What is your city, state, and ZIP code?' };
+  const second = { ...question, id: 'jobs', input_type: 'text', simplified_question: 'How many jobs do you have?' };
+  let saves = 0;
+  vi.stubGlobal('fetch', vi.fn((url: string) => {
+    if (url.endsWith('/next-question')) return reply({ ...state(0), question: first });
+    if (url.endsWith('/glossary')) return reply({ terms: [] });
+    if (url.endsWith('/answers')) return ++saves === 1
+      ? reply({ detail: 'That sounds like a street. Which city, state, and ZIP code?' }, false, 422)
+      : reply({ saved: true, next: { ...state(1), question: second } });
+    return reply({ fields: [] });
+  }));
+  render(<GuidedConversation sessionId="s1" />);
+  const input = await screen.findByLabelText('Type your answer');
+  fireEvent.change(input, { target: { value: 'le conte street' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+  expect((await screen.findByRole('alert')).textContent).toContain('That sounds like a street');
+  fireEvent.change(input, { target: { value: 'Los Angeles, CA 90024' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+  await screen.findByText('How many jobs do you have?');
+  expect(screen.queryByText(/That sounds like a street/)).toBeNull();
+  expect(screen.queryByText(/You said/)).toBeNull();
+});
+
+it('teaches when a typed message is a question, without saving or moving on', async () => {
+  const typedQuestion = { ...question, input_type: 'text', simplified_question: 'Are you claiming exemption from withholding?' };
+  vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+    if (url.endsWith('/next-question')) return reply({ ...state(0), question: typedQuestion });
+    if (url.endsWith('/glossary')) return reply({ terms: [] });
+    if (url.endsWith('/teach')) return reply({ needed: false });
+    if (url.endsWith('/answers')) return reply({ saved: false, asked_for_help: true, next: { ...state(0), question: typedQuestion },
+      lesson: { needed: true, title: 'What exempt means', explanation: 'No federal tax is taken out of your pay.', example: '', why_it_matters: '', trigger: 'asked' } });
+    return reply({ fields: [] });
+  }));
+  render(<GuidedConversation sessionId="s1" />);
+  const input = await screen.findByLabelText('Type your answer');
+  fireEvent.change(input, { target: { value: 'what does exempt mean' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+  expect((await screen.findAllByText('What exempt means')).length).toBe(2); // in the bubble and in the learned list
+  expect(screen.getByText('Here’s what that means')).toBeTruthy();
+  expect(screen.getByText('Are you claiming exemption from withholding?')).toBeTruthy();
+  expect((input as HTMLInputElement).value).toBe('');
+  expect(screen.queryByRole('button', { name: /Earlier questions/ })).toBeNull();
 });
 
 it('offers date entry during voice and tells the agent how to handle spoken dates',async()=>{
