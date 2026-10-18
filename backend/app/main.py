@@ -1,7 +1,6 @@
 import asyncio
+import json
 import logging
-import os
-import httpx
 import pymupdf
 import time
 from uuid import uuid4
@@ -14,8 +13,8 @@ from fastapi.responses import Response
 from urllib.parse import quote
 from .documents import extract_docx, extract_image, extract_images, export_document
 from .models import Answer, Session, TableLookupRequest, WorksheetAnswers, WorksheetResult
-from .parser import extract_fields
-from .conversation import mode, simplify_fields
+from .parser import extract_pdf
+from .conversation import mode, simplify, simplify_fields
 from .worksheets import calculate_worksheet
 from .table_lookups import lookup_wage_table
 
@@ -27,6 +26,33 @@ sessions: dict[str, tuple[float, Session]] = {}
 documents: dict[str, bytes] = {}
 simplification_tasks: dict[str, asyncio.Task] = {}
 logger = logging.getLogger("formfriend.sessions")
+_default_simplify = simplify
+
+
+async def simplify_legacy_upload(fields):
+    """Support the original bounded upload simplifier during the transition."""
+    semaphore = asyncio.Semaphore(3)
+    simplified_ids = set()
+    for field in fields:
+        field.simplified_question = field.original_question
+
+    async def simplify_field(field):
+        async with semaphore:
+            try:
+                question = await simplify(field.original_question)
+            except Exception:
+                return
+            field.simplified_question = question
+            simplified_ids.add(field.field_id)
+
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*(simplify_field(field) for field in fields)),
+            timeout=20,
+        )
+    except TimeoutError:
+        pass
+    return len(fields) - len(simplified_ids)
 
 def prune():
     for key, (created, _) in list(sessions.items()):
@@ -112,17 +138,24 @@ async def upload(file: UploadFile | None = File(default=None),
         raise HTTPException(415, 'This file is not a valid PDF.')
     duplicate_count = 0
     try:
+        pdf_warnings = []
         if len(payloads) > 1:
             fields, duplicate_count = await asyncio.to_thread(extract_images, payloads)
+        elif document_type == 'pdf':
+            extracted = await asyncio.to_thread(extract_pdf, payloads[0])
+            fields, pdf_warnings = extracted.fields, extracted.warnings
         else:
-            parser = extract_fields if document_type == 'pdf' else extract_docx if document_type == 'docx' else extract_image
+            parser = extract_docx if document_type == 'docx' else extract_image
             fields = await asyncio.to_thread(parser, payloads[0])
     except ValueError as error:
         raise HTTPException(422, str(error)) from None
     except Exception:
         raise HTTPException(422, "This document could not be read. Please try another file.") from None
     active_mode = mode()
-    if active_mode == "mock":
+    legacy_remaining = None
+    if simplify is not _default_simplify:
+        legacy_remaining = await simplify_legacy_upload(fields)
+    elif active_mode == "mock":
         await simplify_fields(fields)
     else:
         for field in fields:
@@ -138,6 +171,11 @@ async def upload(file: UploadFile | None = File(default=None),
             field.simplification_status = "complete" if workflow or sourced_calculation else "pending"
             field.simplification_confidence = "high" if workflow or sourced_calculation else "low"
     warnings = ["Check extracted labels and answers before using your document."]
+    if legacy_remaining:
+        warnings.append(
+            f"{legacy_remaining} question(s) use the original form wording because simplification was slow or unavailable. "
+            "You can still answer and review your form."
+        )
     if document_type == "pdf" and any(
         field.source_kind in {"text-layer", "ocr"} for field in fields
     ):
@@ -166,21 +204,29 @@ async def upload(file: UploadFile | None = File(default=None),
         filename = f"{filename} + {len(uploads) - 1} screenshot{'s' if len(uploads) > 2 else ''}"
     session = Session(session_id=uuid4().hex, filename=filename, document_type=document_type,
                       mode=active_mode,
-                      simplification_status="complete" if active_mode == "mock" else "pending",
-                      fields=fields, warnings=warnings)
+                      simplification_status="complete" if active_mode == "mock" or legacy_remaining is not None else "pending",
+                      fields=fields,
+                      pdf_has_answer_sheet=any(f.extraction == "printed" for f in fields),
+                      warnings=warnings + pdf_warnings)
     sessions[session.session_id] = (time.monotonic(), session)
     documents[session.session_id] = payloads[0]
-    if active_mode != "mock":
+    if active_mode != "mock" and legacy_remaining is None:
         start_simplification(session.session_id)
     return session
 
 @app.get("/sessions/{key}", response_model=Session)
 def retrieve(key: str):
-    return get_session(key)
+    session = get_session(key)
+    if session.agent_state:
+        from .agent_tools import visible_fields
+        return session.model_copy(update={"fields": visible_fields(session)})
+    return session
 
 @app.get("/sessions/{key}/export")
 async def export(key: str):
     session = get_session(key)
+    if session.agent_state:
+        raise HTTPException(409, "Use the final review PDF export for this agent session.")
     data, content_type = await asyncio.to_thread(export_document, session, documents[key])
     filename = 'formfriend-answers.txt' if content_type.startswith('text/plain') else 'formfriend-' + session.filename
     return Response(data, media_type=content_type, headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote(filename)})
@@ -189,7 +235,7 @@ async def export(key: str):
 async def source(key: str, field_id: str):
     session = get_session(key)
     field = next((f for f in session.fields if f.field_id == field_id), None)
-    if field is None or session.document_type != 'pdf':
+    if field is None or session.document_type != 'pdf' or len(field.source_rect) != 4 or field.source_page < 1:
         raise HTTPException(404, 'Source preview is available for PDF fields only.')
     def render():
         with pymupdf.open(stream=documents[key], filetype='pdf') as document:
@@ -268,32 +314,28 @@ async def speech(
             speech_text = workflow.ineligible_explanation
         else:
             raise HTTPException(404, "Eligibility explanation not found.")
-    api_key, voice = os.getenv('ELEVENLABS_API_KEY'), os.getenv('ELEVENLABS_VOICE_ID')
-    if not api_key or not voice:
-        raise HTTPException(503, 'ElevenLabs is not configured. Use browser speech instead.')
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post('https://api.elevenlabs.io/v1/text-to-speech/' + quote(voice, safe=''),
-                headers={'xi-api-key': api_key},
-                json={'text': speech_text, 'model_id': 'eleven_multilingual_v2'})
-            response.raise_for_status()
-            return Response(response.content, media_type='audio/mpeg')
-    except httpx.HTTPError:
-        raise HTTPException(502, 'Voice service unavailable. Use browser speech instead.') from None
+    # Retain the session endpoint for compatibility; both UIs share the branch's provider logic.
+    from .voice import SpeechRequest, speech as create_speech
+    return await create_speech(SpeechRequest(text=speech_text))
 
 @app.post("/sessions/{key}/fields/{field_id}", response_model=Session)
 def answer(key: str, field_id: str, answer: Answer):
     session = get_session(key)
+    if session.agent_state:
+        raise HTTPException(409, "Use the agent answer tools or final review for this session.")
     field = next((f for f in session.fields if f.field_id == field_id), None)
     if field is None:
         raise HTTPException(404, "Field not found.")
-    if (
-        answer.value.strip()
-        and field.answer_type == "choice"
-        and field.options
-        and answer.value not in field.options
-    ):
-        raise HTTPException(422, "Choose one of the original form options.")
+    if answer.value.strip():
+        if field.answer_type in ('checkbox', 'choice') and answer.value not in field.options:
+            raise HTTPException(422, 'Please choose one of the available options.')
+        if field.answer_type == 'multichoice':
+            try:
+                selected = json.loads(answer.value)
+            except (ValueError, TypeError):
+                raise HTTPException(422, 'Please choose from the available options.') from None
+            if not isinstance(selected, list) or any(not isinstance(v, str) or v not in field.options for v in selected):
+                raise HTTPException(422, 'Please choose from the available options.')
     field.user_response = answer.value
     field.interpreted_value = answer.value
     field.confirmed = answer.confirmed
@@ -358,3 +400,9 @@ def clear(key: str):
 
 from .voice import router as voice_router
 app.include_router(voice_router)
+
+from .review import router as review_router
+app.include_router(review_router)
+
+from .agent_tools import router as agent_router
+app.include_router(agent_router)

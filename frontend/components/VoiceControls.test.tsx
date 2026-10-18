@@ -8,7 +8,7 @@ class Mic {
  constructor(){Mic.current=this;}
 }
 const props={question:'Your name?',fieldId:'name',answer:'',onAnswer:vi.fn()};
-beforeEach(()=>{Object.defineProperty(window,'SpeechRecognition',{value:Mic,configurable:true});props.onAnswer=vi.fn();});
+beforeEach(()=>{localStorage.clear();Object.defineProperty(window,'SpeechRecognition',{value:Mic,configurable:true});props.onAnswer=vi.fn();});
 afterEach(()=>{cleanup();vi.unstubAllGlobals();vi.restoreAllMocks();});
 it('returns a transcript for editing without saving it',()=>{
  render(<VoiceControls {...props}/>);fireEvent.click(screen.getByText('Answer with microphone'));
@@ -49,4 +49,49 @@ it('stops microphone capture before speaking and releases audio on mute',async()
  fireEvent.click(screen.getByText('Read question aloud'));
  await waitFor(()=>expect(play).toHaveBeenCalled());expect(mic.abort).toHaveBeenCalled();
  fireEvent.click(screen.getByText('Mute voice'));expect(pause).toHaveBeenCalled();expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:test');
+});
+
+it('cancels in-flight playback on navigation without playing stale audio',async()=>{
+ let resolve: (value: unknown)=>void = ()=>{};
+ const play=vi.fn().mockResolvedValue(undefined);
+ vi.stubGlobal('Audio',class {pause=vi.fn();play=play;onended=null;onerror=null;});
+ vi.stubGlobal('fetch',vi.fn().mockImplementation(()=>new Promise(r=>{resolve=r;})));
+ const view=render(<VoiceControls {...props}/>);
+ fireEvent.click(screen.getByText('Read question aloud'));
+ view.rerender(<VoiceControls {...props} fieldId="city" question="Your city?"/>);
+ await act(async()=>{resolve({ok:true,blob:async()=>new Blob(['stale audio'])});});
+ expect(play).not.toHaveBeenCalled();
+});
+
+it('stops capture while an answer is being saved',()=>{
+ const view=render(<VoiceControls {...props}/>);
+ fireEvent.click(screen.getByText('Answer with microphone'));const old=Mic.current;
+ view.rerender(<VoiceControls {...props} disabled/>);
+ act(()=>old.onresult?.({results:[[{transcript:'late answer'}]]}));
+ expect(old.abort).toHaveBeenCalled();expect(props.onAnswer).not.toHaveBeenCalled();
+});
+
+it('keeps read-aloud available for choice fields without showing dictation',()=>{
+ render(<VoiceControls {...props} allowDictation={false}/>);
+ expect(screen.queryByText('Answer with microphone')).toBeNull();
+ expect((screen.getByText('Read question aloud') as HTMLButtonElement).disabled).toBe(false);
+});
+
+it('reports unavailable ElevenLabs audio without switching to browser speech',async()=>{
+ const speak=vi.fn();
+ Object.defineProperty(window,'speechSynthesis',{value:{speak,cancel:vi.fn()},configurable:true});
+ vi.stubGlobal('fetch',vi.fn().mockResolvedValue({ok:false,json:async()=>({detail:'Voice is not configured.'})}));
+ render(<VoiceControls {...props}/>);
+ fireEvent.click(screen.getByText('Read question aloud'));
+ await waitFor(()=>expect(screen.getByRole('alert').textContent).toContain('not configured'));
+ expect(speak).not.toHaveBeenCalled();
+});
+
+it('explains when the browser blocks automatic ElevenLabs playback',async()=>{
+ vi.stubGlobal('Audio',class {pause=vi.fn();play=vi.fn().mockRejectedValue(new Error('NotAllowedError'));onended=null;onerror=null;});
+ URL.createObjectURL=vi.fn().mockReturnValue('blob:test');URL.revokeObjectURL=vi.fn();
+ vi.stubGlobal('fetch',vi.fn().mockResolvedValue({ok:true,blob:async()=>new Blob(['audio'])}));
+ render(<VoiceControls {...props}/>);
+ fireEvent.click(screen.getByText('Read question aloud'));
+ await waitFor(()=>expect(screen.getByRole('alert').textContent).toContain('blocked automatic playback'));
 });

@@ -133,10 +133,10 @@ def test_pdf_field_locations():
     assert fields[0].source_page == 1
     assert len(fields[0].source_rect) == 4
 
-def test_nonfillable_rejected():
+def test_empty_pdf_rejected():
     with pymupdf.open() as doc:
         doc.new_page()
-        with pytest.raises(ValueError, match="No fillable"):
+        with pytest.raises(ValueError, match="No questions"):
             extract_fields(doc.tobytes())
 
 def test_unlabeled_text_uses_nearby_page_text():
@@ -852,9 +852,11 @@ def test_nonfillable_pdf_exports_answer_sheet(monkeypatch):
         )
         exported = client.get(f'/sessions/{key}/export')
         assert exported.status_code == 200
-        assert exported.headers['content-type'].startswith('text/plain')
-        assert '1 Full legal name\nAlex Example' in exported.text
-        assert 'formfriend-answers.txt' in exported.headers['content-disposition']
+        assert exported.headers['content-type'].startswith('application/pdf')
+        with pymupdf.open(stream=exported.content, filetype='pdf') as document:
+            assert len(document) > 1
+            assert 'Alex Example' in ''.join(page.get_text() for page in document)
+        assert 'formfriend-regular.pdf' in exported.headers['content-disposition']
 
 
 def test_docx_export(monkeypatch):

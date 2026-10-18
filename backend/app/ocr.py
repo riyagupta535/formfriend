@@ -475,6 +475,24 @@ def _label_fields(lines: list[OCRLine], page_number: int, cutoff: float,
     return fields
 
 
+def _generic_prompt_fields(lines: list[OCRLine], page_number: int, cutoff: float) -> list[FormField]:
+    fields = []
+    for index, line in enumerate(lines):
+        text = line.text.strip()
+        if line.rect.y0 >= cutoff or not re.search(r"[A-Za-z]", text):
+            continue
+        if not ("?" in text or text.endswith(":") or re.search(r"_{3,}", text)):
+            continue
+        fields.append(FormField(
+            field_id=f"p{page_number}:ocr:prompt-{index}",
+            original_question=text[:1000], source_page=page_number,
+            source_rect=list(line.rect), source_context=text[:1000],
+            extraction_confidence="medium" if line.confidence >= .85 else "low",
+            source_kind="ocr", ocr_confidence=round(line.confidence, 4),
+        ))
+    return fields
+
+
 def extract_ocr_fields(document: pymupdf.Document) -> list[FormField]:
     """OCR image-only pages and conservatively return question-like fields.
 
@@ -493,6 +511,12 @@ def extract_ocr_fields(document: pymupdf.Document) -> list[FormField]:
                     "exemptions" in _compact(field.original_question)
                 )]
             fields.extend(label_fields)
+            fields.sort(key=lambda field: (field.source_rect[1], field.source_rect[0]))
+            return fields[:100]
+        fields = _label_fields(lines, page_number, cutoff, fields) + _generic_prompt_fields(
+            lines, page_number, cutoff
+        )
+        if fields:
             fields.sort(key=lambda field: (field.source_rect[1], field.source_rect[0]))
             return fields[:100]
     return []

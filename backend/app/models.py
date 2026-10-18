@@ -1,5 +1,6 @@
-from typing import Literal, Self
+from typing import Literal
 from pydantic import BaseModel, Field, model_validator
+from .agent_models import AgentState
 
 class SubQuestion(BaseModel):
     text: str = Field(min_length=1, max_length=200)
@@ -54,7 +55,7 @@ class WorksheetExpression(BaseModel):
     ]
     input_id: str | None = Field(default=None, max_length=50)
     value: float | None = None
-    operands: list[Self] = Field(default_factory=list, max_length=10)
+    operands: list["WorksheetExpression"] = Field(default_factory=list, max_length=10)
     choices: dict[str, float] = Field(default_factory=dict)
 
 class WorksheetSpec(BaseModel):
@@ -139,8 +140,10 @@ class FormField(BaseModel):
     eligibility_workflow: EligibilityWorkflow | None = None
     simplification_status: Literal["pending", "complete", "failed"] = "complete"
     simplification_confidence: Literal["high", "medium", "low"] = "low"
-    answer_type: Literal["text", "number", "currency", "date", "checkbox", "choice"] = "text"
+    answer_type: Literal["text", "number", "currency", "date", "checkbox", "choice", "multichoice"] = "text"
     options: list[str] = Field(default_factory=list)
+    widget_refs: list[str] = Field(default_factory=list)
+    extraction: Literal["native", "printed"] = "native"
     pdf_field_names: list[str] = Field(default_factory=list)
     source_page: int
     source_rect: list[float]
@@ -151,15 +154,17 @@ class FormField(BaseModel):
     user_response: str | None = None
     interpreted_value: str | None = None
     confirmed: bool = False
-    status: Literal["unanswered", "answered", "skipped"] = "unanswered"
+    status: Literal["unanswered", "answered", "skipped", "not_applicable", "blocked"] = "unanswered"
 
 class Session(BaseModel):
     session_id: str
+    agent_state: AgentState | None = None
     filename: str
     document_type: Literal["pdf", "docx", "image"] = "pdf"
-    mode: Literal["mock", "gemini"]
+    mode: Literal["mock", "gemini", "step-5-preview"]
     simplification_status: Literal["pending", "running", "complete", "partial"] = "complete"
     fields: list[FormField]
+    pdf_has_answer_sheet: bool = False
     warnings: list[str] = Field(default_factory=list)
 
 class FieldSimplification(BaseModel):

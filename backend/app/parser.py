@@ -39,6 +39,15 @@ class _ExtractedWidget:
     rect: pymupdf.Rect
     page_number: int
     confidence: str
+    flags: int
+    choices: list[str]
+    on_state: str | None
+
+
+@dataclass
+class PDFExtraction:
+    fields: list[FormField]
+    warnings: list[str]
 
 
 @dataclass
@@ -634,6 +643,29 @@ def _answer_type(label: str, widget_type: int, grouped: bool = False) -> str:
     return "text"
 
 
+def _simple_printed_fields(document: pymupdf.Document) -> list[FormField]:
+    fields = []
+    label = re.compile(
+        r'^(?:\d+[.)]?\s*)?(?:full name|first name|last name|name|date of birth|'
+        r'birth date|address|street address|city|state|zip(?: code)?|postal code|'
+        r'email(?: address)?|phone(?: number)?|telephone|signature|date)\s*[:_]*$', re.I
+    )
+    for page_number, page in enumerate(document, 1):
+        for index, line in enumerate(_logical_lines(page)):
+            text = line.text.strip()
+            if not text.lower().startswith('signature') and (
+                '?' in text or (':' in text and '://' not in text)
+                or re.search(r'_{3,}', text) or label.fullmatch(text)
+            ):
+                fields.append(FormField(
+                    field_id=f'printed:{page_number}:{index}',
+                    original_question=text[:1000], source_page=page_number,
+                    source_rect=list(line.rect), source_context=text[:1000],
+                    extraction='printed', source_kind='text-layer',
+                ))
+    return fields
+
+
 def _question_number(text: str) -> str | None:
     line_code = re.search(r"\b(\d+\([a-z]\))", text, re.IGNORECASE)
     if line_code:
@@ -841,6 +873,7 @@ def _extract_text_layer_fields(document: pymupdf.Document) -> list[FormField]:
                 source_context=source_context[:1000],
                 extraction_confidence="medium",
                 source_kind="text-layer",
+                extraction="printed",
             ))
 
         # Pick up unnumbered labels attached to blank lines, cells, or digit boxes.
@@ -889,13 +922,14 @@ def _extract_text_layer_fields(document: pymupdf.Document) -> list[FormField]:
                 source_context=merged,
                 extraction_confidence="medium",
                 source_kind="text-layer",
+                extraction="printed",
             ))
 
     fields.sort(key=lambda field: (field.source_page, field.source_rect[1], field.source_rect[0]))
     return fields
 
 
-def extract_fields(data: bytes) -> list[FormField]:
+def _extract_fields(data: bytes, warnings: list[str]) -> list[FormField]:
     """Extract supported fillable fields and their nearby source text.
 
     This is deliberately deterministic. The parser gathers evidence for an LLM but
@@ -905,9 +939,18 @@ def extract_fields(data: bytes) -> list[FormField]:
     with pymupdf.open(stream=data, filetype="pdf") as document:
         if document.needs_pass:
             raise ValueError("Please upload an unlocked PDF.")
+        if len(document) > 30:
+            raise ValueError("Please split this PDF into documents of 30 pages or fewer.")
         for page_number, page in enumerate(document, 1):
-            widgets = [widget for widget in (page.widgets() or [])
-                       if widget.field_type in _SUPPORTED_TYPES]
+            widgets = []
+            for widget in page.widgets() or []:
+                if widget.field_flags & pymupdf.PDF_FIELD_IS_READ_ONLY:
+                    warnings.append('Read-only PDF fields are preserved and cannot be edited here.')
+                    continue
+                if widget.field_type not in _SUPPORTED_TYPES:
+                    warnings.append('Signature fields and action buttons are preserved. Complete signatures separately after downloading.')
+                    continue
+                widgets.append(widget)
             logical_lines = _logical_lines(page)
             visual_lines = _visual_lines(page)
             for widget in widgets:
@@ -938,10 +981,19 @@ def extract_fields(data: bytes) -> list[FormField]:
                     rect=pymupdf.Rect(widget.rect),
                     page_number=page_number,
                     confidence=confidence,
+                    flags=widget.field_flags,
+                    choices=[str(value[0] if isinstance(value, (tuple, list)) else value)
+                             for value in widget.choice_values or []],
+                    on_state=str(widget.on_state()) if widget.field_type in {
+                        pymupdf.PDF_WIDGET_TYPE_CHECKBOX,
+                        pymupdf.PDF_WIDGET_TYPE_RADIOBUTTON,
+                    } else None,
                 ))
 
         if not extracted:
             text_fields = _extract_text_layer_fields(document)
+            if not text_fields:
+                text_fields = _simple_printed_fields(document)
             if text_fields:
                 if len(text_fields) > 100:
                     raise ValueError("Please use a form with 100 fields or fewer for this demo.")
@@ -950,37 +1002,48 @@ def extract_fields(data: bytes) -> list[FormField]:
                 _attach_table_lookup_workflows(document, text_fields)
                 return text_fields
             from .ocr import extract_ocr_fields
-            ocr_fields = extract_ocr_fields(document)
+            ocr_fields = extract_ocr_fields(document) if any(page.get_images() for page in document) else []
             if ocr_fields:
                 _attach_worksheet_workflows(document, ocr_fields)
                 _attach_eligibility_workflows(document, ocr_fields)
                 _attach_table_lookup_workflows(document, ocr_fields)
+                for field in ocr_fields:
+                    field.extraction = 'printed'
+                warnings.append('Scanned pages were read using OCR. Check extracted questions against the page preview.')
                 return ocr_fields
 
     if not extracted:
         raise ValueError(
-            "No fillable fields, text-based questions, or recognizable scanned questions were found."
+            "No questions, fillable fields, or recognizable scanned prompts were found."
         )
 
-    checkbox_groups: dict[tuple[int, str], list[_ExtractedWidget]] = defaultdict(list)
+    checkbox_groups: dict[tuple[int, str] | tuple[str, str], list[_ExtractedWidget]] = defaultdict(list)
     ungrouped = []
     for item in extracted:
         if item.field_type in {pymupdf.PDF_WIDGET_TYPE_CHECKBOX,
                                pymupdf.PDF_WIDGET_TYPE_RADIOBUTTON}:
-            checkbox_groups[(item.page_number, _checkbox_group_name(item.name))].append(item)
+            key = ("radio", item.name) if item.field_type == pymupdf.PDF_WIDGET_TYPE_RADIOBUTTON else (
+                item.page_number, _checkbox_group_name(item.name)
+            )
+            checkbox_groups[key].append(item)
         else:
             ungrouped.append(item)
 
     fields: list[FormField] = []
     for item in ungrouped:
+        options = item.choices
+        answer_type = _answer_type(item.label, item.field_type)
+        if item.field_type == pymupdf.PDF_WIDGET_TYPE_LISTBOX and item.flags & pymupdf.PDF_CH_FIELD_IS_MULTI_SELECT:
+            answer_type = 'multichoice'
         fields.append(FormField(
             field_id=f"p{item.page_number}:{item.xref}",
             question_number=_question_number(f"{item.label} {item.context}"),
             section_title=_step_section_title(item.context),
             original_question=item.label,
-            answer_type=_answer_type(item.label, item.field_type),
-            options=[],
+            answer_type=answer_type,
+            options=options,
             pdf_field_names=[item.name],
+            widget_refs=[f'p{item.page_number}:{item.xref}'],
             source_page=item.page_number,
             source_rect=list(item.rect),
             source_context=item.context,
@@ -990,7 +1053,9 @@ def extract_fields(data: bytes) -> list[FormField]:
     for (_, _), items in checkbox_groups.items():
         items.sort(key=lambda item: (item.rect.y0, item.rect.x0))
         grouped = len(items) > 1
-        options = [item.label for item in items] if grouped else []
+        options = ([item.on_state or item.label for item in items]
+                   if items[0].field_type == pymupdf.PDF_WIDGET_TYPE_RADIOBUTTON
+                   else [item.label for item in items] if grouped else ['Yes', 'No'])
         question = f"Select one: {'; '.join(options)}" if grouped else items[0].label
         rect = _union([item.rect for item in items])
         context = " ".join(dict.fromkeys(item.context for item in items))[:1000]
@@ -1002,6 +1067,7 @@ def extract_fields(data: bytes) -> list[FormField]:
             answer_type=_answer_type(question, items[0].field_type, grouped=grouped),
             options=options,
             pdf_field_names=[item.name for item in items],
+            widget_refs=[f'p{item.page_number}:{item.xref}' for item in items],
             source_page=items[0].page_number,
             source_rect=list(rect),
             source_context=context,
@@ -1016,3 +1082,18 @@ def extract_fields(data: bytes) -> list[FormField]:
         _attach_eligibility_workflows(document, fields)
         _attach_table_lookup_workflows(document, fields)
     return fields
+
+
+def extract_pdf(data: bytes) -> PDFExtraction:
+    warnings: list[str] = []
+    fields = _extract_fields(data, warnings)
+    if any(field.extraction == 'printed' for field in fields):
+        warnings.append(
+            'Printed or scanned questions are detected heuristically. Their answers are appended '
+            'as a PDF answer sheet rather than placed into guessed positions.'
+        )
+    return PDFExtraction(fields, list(dict.fromkeys(warnings)))
+
+
+def extract_fields(data: bytes) -> list[FormField]:
+    return extract_pdf(data).fields
