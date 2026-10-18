@@ -313,3 +313,14 @@ it('flips the guide mascot and animates its mouth and tongue only during agent s
   view.rerender(<GuidedConversation sessionId="s1" />);
   expect(view.container.querySelector('.mascot-mouth')).toBeNull();
 });
+
+it('offers date entry during voice and tells the agent how to handle spoken dates',async()=>{
+ calls.status='connected';
+ const dateQuestion={...question,id:'birth',input_type:'date',simplified_question:'What is your birth date?'};
+ vi.stubGlobal('fetch',vi.fn((url:string)=>url.endsWith('/glossary')?reply({terms:[]}):url.endsWith('/sessions/s1')?reply({fields:[]}):reply({...state(0),question:dateQuestion})));
+ render(<GuidedConversation sessionId="s1"/>);
+ const date=await screen.findByLabelText('Date (month/day/year)');
+ expect(calls.context.mock.calls.some(([text])=>text.includes('Accept spoken dates naturally'))).toBe(true);
+ fireEvent.change(date,{target:{value:'2000-01-02'}});fireEvent.click(screen.getByRole('button',{name:'Use this date'}));
+ expect(calls.send).toHaveBeenCalledWith('2000-01-02');expect(calls.start).not.toHaveBeenCalled();
+});

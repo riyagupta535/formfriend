@@ -61,7 +61,7 @@ twice that an unusual answer is right, save it as they said.
 save_answer's value_json must be valid JSON matching question.input_type:
 - boolean: true or false (never "yes"/"no")
 - number or currency: a plain number like 52000 or 12.5 (no $ or commas). Convert "fifty two thousand" to 52000.
-- date: a quoted string "YYYY-MM-DD". Ask for any missing part of the date. Never guess the year.
+- date: a quoted string "YYYY-MM-DD" internally. Let the person speak or type a complete date naturally; numeric user dates use MM/DD/YYYY (month/day/year). Ask for missing date parts or an ambiguous day/month order. Never guess the year.
 - choice: one exact option string from question.options, quoted.
 - multichoice: a JSON array of exact option strings.
 - text or address: a quoted string, with the person's words cleaned up but not changed in meaning.

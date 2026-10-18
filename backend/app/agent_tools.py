@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from .agent_models import (AgentSessionRequest, AgentState, ExplainRequest, FromUploadRequest, GlossaryEntry,
                            SaveAgentAnswer, SkipAgentQuestion)
 from .models import FormField, Session
+from .dates import normalize_date
 from .text_utils import strip_form_reference
 
 
@@ -97,7 +98,7 @@ def _valid_ssn(value: str) -> bool:
 def encoded(question, value):
     """Validate canonical types; uncertainty belongs in conversation, never in saved values."""
     result = _encoded(question, value)
-    check_rules(question, value.strip() if isinstance(value, str) else value)
+    check_rules(question, result if question.input_type == 'date' else value.strip() if isinstance(value, str) else value)
     return result
 
 
@@ -126,10 +127,9 @@ def _encoded(question, value):
         raise HTTPException(422, 'Choose an exact available option. Ask a follow-up if the choice is unclear.')
     if kind == 'date':
         try:
-            if date.fromisoformat(value).isoformat() != value:
-                raise ValueError()
-        except ValueError:
-            raise HTTPException(422, 'A full date in YYYY-MM-DD format is required. Ask for missing date parts.') from None
+            value = normalize_date(value)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from None
     return value
 
 

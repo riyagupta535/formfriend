@@ -1155,3 +1155,5 @@ background:white}
 
 /* Reverse the guide mascot and its mouth together; keep other pages unchanged. */
 .mascot.mascot-flipped img, .mascot.mascot-flipped .mascot-mouth { transform: scaleX(1); }
+
+.date-entry{border:1px solid #cbd9c5;border-radius:14px;padding:16px;margin:16px 0;display:flex;flex-wrap:wrap;gap:12px;align-items:center}.date-entry legend{font-weight:600}.date-entry p{flex-basis:100%;margin:0;font-size:14px}.date-entry input{font:inherit;padding:10px;border:1px solid #cbd9c5;border-radius:10px;min-height:44px;max-width:100%;background:white;color:var(--ink)}
