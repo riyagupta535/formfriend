@@ -98,3 +98,28 @@ def test_blank_answer_is_explicitly_skipped(review_session):
     field = sessions['review-test'][1].fields[0]
     assert field.status == 'skipped'
     assert not field.confirmed
+
+
+def test_large_guided_form_can_be_reviewed_and_exported():
+    with TestClient(app) as client:
+        created = client.post('/agent/sessions', json={'questions': [
+            {'id': f'field-{index}', 'original_text': f'Question {index}',
+             'simplified_question': f'Question {index}?', 'input_type': 'text'}
+            for index in range(120)
+        ]})
+        assert created.status_code == 200, created.text
+        key = created.json()['session_id']
+        try:
+            response = client.post(f'/sessions/{key}/review/export', json={
+                'reviewed': True, 'answers': [
+                    {'field_id': f'field-{index}', 'value': f'Answer {index}'}
+                    for index in range(120)
+                ],
+            })
+            assert response.status_code == 200, response.text
+            assert response.content.startswith(b'%PDF-')
+            assert len(sessions[key][1].fields) == 120
+            assert all(field.confirmed for field in sessions[key][1].fields)
+        finally:
+            sessions.pop(key, None)
+            documents.pop(key, None)

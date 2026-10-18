@@ -303,6 +303,7 @@ it('shows loading instead of original wording until Gemini finishes the current 
   render(<GuidedConversation sessionId="s1" />);
 
   expect(await screen.findByText('Loading this question…')).toBeTruthy();
+  expect(screen.getByText('Untangling the paperwork…')).toBeTruthy();
   expect(screen.queryByText(question.original_text)).toBeNull();
   expect(screen.queryByRole('textbox', { name: 'Type your answer' })).toBeNull();
   expect(await screen.findByText('How many children under 17?', {}, { timeout: 2000 })).toBeTruthy();
@@ -316,7 +317,7 @@ it('uses the introduction once and resumes at the latest question after a break'
  await screen.findByText('How many children under 17?');
  fireEvent.click(screen.getByRole('button',{name:/Start talking/}));
  await screen.findByRole('button',{name:/Keep going/});
- expect(calls.start.mock.calls[0][0].overrides.agent.firstMessage).toContain("I’m Fomy");
+ expect(calls.start.mock.calls[0][0].overrides.agent.firstMessage).toContain("I’m Fomi");
  revision=1;
  fireEvent.click(screen.getByRole('button',{name:/Keep going/}));
  await waitFor(()=>expect(calls.start).toHaveBeenCalledTimes(2));
@@ -366,7 +367,7 @@ it('keeps the typed draft when sending to the live conversation fails',async()=>
  expect(screen.getByRole('alert').textContent).toContain('could not be sent');
 });
 
-it('shows what Fomy says in the speech bubble and earlier answers as greyed history', async () => {
+it('shows what Fomi says in the speech bubble and earlier answers as greyed history', async () => {
   vi.stubGlobal('fetch', vi.fn((url: string) => url.endsWith('/sessions/s1')
     ? reply({ fields: [
         { field_id: 'name', simplified_question: 'What is your name?', original_question: 'Name', user_response: 'Maria Lopez', status: 'answered' },
@@ -499,7 +500,7 @@ it('uses a Spanish greeting and language override for the voice session', async 
   await waitFor(() => expect(calls.start).toHaveBeenCalled());
   const agent = calls.start.mock.calls[0][0].overrides.agent;
   expect(agent.language).toBe('es');
-  expect(agent.firstMessage).toContain('Hola, soy Fomy');
+  expect(agent.firstMessage).toContain('Hola, soy Fomi');
   expect(calls.context.mock.calls.some(([text]) => text.includes('clear, neutral Spanish'))).toBe(true);
 });
 
@@ -527,7 +528,7 @@ it.each(['zh', 'fil', 'vi', 'ar', 'fr', 'ko', 'pt', 'hi'])('starts a %s voice co
   await waitFor(() => expect(calls.start).toHaveBeenCalledTimes(1));
   const voiceCode = code === 'fil' ? 'tl' : code === 'pt' ? 'pt-br' : code;
   expect(calls.start.mock.calls[0][0].overrides.agent.language).toBe(voiceCode);
-  expect(calls.start.mock.calls[0][0].overrides.agent.firstMessage).not.toContain('Hi, I’m Fomy');
+  expect(calls.start.mock.calls[0][0].overrides.agent.firstMessage).not.toContain('Hi, I’m Fomi');
   expect(view.container.querySelector('.guide-bubble')?.getAttribute('dir')).toBe(code === 'ar' ? 'rtl' : 'ltr');
   fireEvent.click(screen.getByRole('button', { name: /Keep going/ }));
   await waitFor(() => expect(calls.start).toHaveBeenCalledTimes(2));

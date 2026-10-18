@@ -1147,7 +1147,7 @@ background:white}
 
 .guide-scene { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 26px; align-items: start; }
 .guide-mascot { position: sticky; top: 12px; padding-top: 4px; }
-.guide-mascot .mascot { width: 210px; max-width: 100%; }
+.guide-mascot .mascot { width: 250px; max-width: none; margin-left: -28px; }
 .guide-bubble { position: relative; background: #fff; border: 1.5px solid #cfdcc9; border-radius: 26px; padding: 20px 24px; box-shadow: 0 8px 24px #2d4a3c0f; }
 /* Tail pointing back at the mascot: a bordered triangle with a white one on top. */
 .guide-bubble::before, .guide-bubble::after { content: ""; position: absolute; top: 64px; width: 0; height: 0; border-style: solid; }
@@ -1168,7 +1168,7 @@ background:white}
   .guide-history-hint { display: none; }
   .guide-scene { grid-template-columns: 1fr; gap: 14px; }
   .guide-mascot { position: static; padding: 0 0 0 8px; }
-  .guide-mascot .mascot { width: 92px; }
+  .guide-mascot .mascot { width: 92px; max-width: 100%; margin-left: 0; }
   .guide-bubble { padding: 22px 18px; }
   .guide-bubble::before { top: -17px; left: 44px; border-width: 0 13px 17px 13px; border-color: transparent transparent #cfdcc9 transparent; }
   .guide-bubble::after { top: -14px; left: 45px; border-width: 0 12px 15px 12px; border-color: transparent transparent #fff transparent; }

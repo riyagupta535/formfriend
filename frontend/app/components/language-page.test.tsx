@@ -16,7 +16,7 @@ it('chooses Spanish after upload and creates a guide without uploading or parsin
   });
   vi.stubGlobal('fetch', fetchMock);
   render(<LanguagePage />);
-  expect(await screen.findByText('Which language would you like Fomy to use?')).toBeTruthy();
+  expect(await screen.findByText('Which language would you like Fomi to use?')).toBeTruthy();
   fireEvent.change(screen.getByLabelText('Question language'), { target: { value: 'es' } });
   fireEvent.click(screen.getByRole('button', { name: /Continue to questions/ }));
   await waitFor(() => expect(push).toHaveBeenCalledWith('/guide'));

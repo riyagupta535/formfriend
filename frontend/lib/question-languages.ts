@@ -1,27 +1,27 @@
 export const QUESTION_LANGUAGES = {
   en: {
     label: 'English', name: 'English', htmlLang: 'en',
-    greeting: 'Hi, I’m Fomy. I’ll help you fill out your form, one small question at a time. Ready to start?',
+    greeting: 'Hi, I’m Fomi. I’ll help you fill out your form, one small question at a time. Ready to start?',
     ready: 'Your answers are ready to review.', resume: 'Let’s continue with the question we were working on.',
   },
   es: {
     label: 'Español (Spanish)', name: 'Spanish', htmlLang: 'es',
-    greeting: 'Hola, soy Fomy. Te ayudaré a completar tu formulario, una pregunta a la vez. ¿Empezamos?',
+    greeting: 'Hola, soy Fomi. Te ayudaré a completar tu formulario, una pregunta a la vez. ¿Empezamos?',
     ready: 'Tus respuestas están listas para revisar.', resume: 'Continuemos con la pregunta anterior.',
   },
   zh: {
     label: '中文 (Chinese)', name: 'Simplified Chinese (Mandarin)', htmlLang: 'zh-Hans',
-    greeting: '你好，我是 Fomy。我会一步一步帮你填写表格，一次回答一个简单的问题。我们开始吧？',
+    greeting: '你好，我是 Fomi。我会一步一步帮你填写表格，一次回答一个简单的问题。我们开始吧？',
     ready: '你的回答已准备好，可以检查了。', resume: '我们继续回答刚才的问题吧。',
   },
   fil: {
     label: 'Tagalog', name: 'Tagalog (Filipino)', htmlLang: 'fil',
-    greeting: 'Kumusta, ako si Fomy. Tutulungan kitang sagutan ang form, isang simpleng tanong sa bawat pagkakataon. Magsimula na tayo?',
+    greeting: 'Kumusta, ako si Fomi. Tutulungan kitang sagutan ang form, isang simpleng tanong sa bawat pagkakataon. Magsimula na tayo?',
     ready: 'Maaari mo nang suriin ang mga sagot mo.', resume: 'Ituloy natin ang tanong na sinasagutan natin.',
   },
   vi: {
     label: 'Tiếng Việt (Vietnamese)', name: 'Vietnamese', htmlLang: 'vi',
-    greeting: 'Xin chào, tôi là Fomy. Tôi sẽ giúp bạn điền biểu mẫu, từng câu hỏi đơn giản một. Chúng ta bắt đầu nhé?',
+    greeting: 'Xin chào, tôi là Fomi. Tôi sẽ giúp bạn điền biểu mẫu, từng câu hỏi đơn giản một. Chúng ta bắt đầu nhé?',
     ready: 'Bạn có thể kiểm tra lại các câu trả lời.', resume: 'Chúng ta tiếp tục câu hỏi trước nhé.',
   },
   ar: {
@@ -31,7 +31,7 @@ export const QUESTION_LANGUAGES = {
   },
   fr: {
     label: 'Français (French)', name: 'French', htmlLang: 'fr',
-    greeting: 'Bonjour, je suis Fomy. Je vais vous aider à remplir votre formulaire, une petite question à la fois. On commence ?',
+    greeting: 'Bonjour, je suis Fomi. Je vais vous aider à remplir votre formulaire, une petite question à la fois. On commence ?',
     ready: 'Vos réponses sont prêtes à être vérifiées.', resume: 'Reprenons la question précédente.',
   },
   ko: {
@@ -41,7 +41,7 @@ export const QUESTION_LANGUAGES = {
   },
   pt: {
     label: 'Português (Portuguese)', name: 'Brazilian Portuguese', htmlLang: 'pt-BR',
-    greeting: 'Olá, eu sou o Fomy. Vou ajudar você a preencher seu formulário, uma pergunta simples de cada vez. Vamos começar?',
+    greeting: 'Olá, eu sou o Fomi. Vou ajudar você a preencher seu formulário, uma pergunta simples de cada vez. Vamos começar?',
     ready: 'Suas respostas estão prontas para revisão.', resume: 'Vamos continuar com a pergunta anterior.',
   },
   hi: {

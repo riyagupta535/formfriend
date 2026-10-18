@@ -118,7 +118,7 @@ class AgentQuestion(BaseModel):
 
 class AgentSessionRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    questions: list[AgentQuestion] = Field(min_length=1, max_length=100)
+    questions: list[AgentQuestion] = Field(min_length=1, max_length=300)
     document_session_id: str | None = None
     language: QuestionLanguage = 'en'
 

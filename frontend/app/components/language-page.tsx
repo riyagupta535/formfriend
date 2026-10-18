@@ -51,7 +51,7 @@ export default function LanguagePage() {
     {!ready ? <div className="empty-state" role="status">Finding your form…</div>
       : !session ? <div className="empty-state"><h1>Let’s start with your form.</h1><p>Upload a document before choosing your question language.</p><Link className="button primary" href="/upload">Upload a form ↗</Link></div>
       : <section className="language-step" aria-labelledby="language-title">
-        <h1 id="language-title">Which language would you like Fomy to use?</h1>
+        <h1 id="language-title">Which language would you like Fomi to use?</h1>
         <QuestionLanguageSelect value={language} onChange={setLanguage} disabled={busy} />
         <button type="button" className="button primary" disabled={busy} onClick={() => void continueToQuestions()}>{busy ? "Preparing your questions…" : "Continue to questions"}<span aria-hidden="true">→</span></button>
       </section>}

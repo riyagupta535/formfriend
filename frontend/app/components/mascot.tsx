@@ -15,7 +15,7 @@ export default function Mascot({
     <div className={`mascot ${small ? "mascot-small" : ""} ${talking ? "talking" : ""} ${flipped ? "mascot-flipped" : ""}`}>
       <img
         src="/images/formfriend-mascot-top-hat.png"
-        alt="Fomy, your friendly teal guide wearing a navy top hat with a teal band"
+        alt="Fomi, your friendly teal guide wearing a navy top hat with a teal band"
         width={1236}
         height={1272}
         draggable={false}

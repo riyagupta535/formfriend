@@ -23,7 +23,7 @@ class ReviewedAnswer(BaseModel):
 
 class ReviewedExport(BaseModel):
     reviewed: Literal[True]
-    answers: list[ReviewedAnswer] = Field(max_length=100)
+    answers: list[ReviewedAnswer] = Field(max_length=300)
 
 
 def validate_value(field, value):

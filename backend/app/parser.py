@@ -970,7 +970,7 @@ def _extract_fields(data: bytes, warnings: list[str]) -> list[FormField]:
                 elif widget.field_type in {pymupdf.PDF_WIDGET_TYPE_CHECKBOX,
                                            pymupdf.PDF_WIDGET_TYPE_RADIOBUTTON}:
                     inferred = _checkbox_label(widget.rect, logical_lines, visual_lines)
-                    label = context if widget.rect.x0 > page.rect.width * 0.75 else inferred or context
+                    label = inferred or context
                     confidence = "medium"
                 else:
                     label = _direct_label(widget.rect, logical_lines) or context
@@ -1000,8 +1000,8 @@ def _extract_fields(data: bytes, warnings: list[str]) -> list[FormField]:
             if not text_fields:
                 text_fields = _simple_printed_fields(document)
             if text_fields:
-                if len(text_fields) > 100:
-                    raise ValueError("Please use a form with 100 fields or fewer for this demo.")
+                if len(text_fields) > 300:
+                    raise ValueError("Please use a form with 300 fields or fewer for this demo.")
                 _attach_worksheet_workflows(document, text_fields)
                 _attach_eligibility_workflows(document, text_fields)
                 _attach_table_lookup_workflows(document, text_fields)
@@ -1080,8 +1080,8 @@ def _extract_fields(data: bytes, warnings: list[str]) -> list[FormField]:
         ))
 
     fields.sort(key=lambda field: (field.source_page, field.source_rect[1], field.source_rect[0]))
-    if len(fields) > 100:
-        raise ValueError("Please use a form with 100 fields or fewer for this demo.")
+    if len(fields) > 300:
+        raise ValueError("Please use a form with 300 fields or fewer for this demo.")
     with pymupdf.open(stream=data, filetype="pdf") as document:
         _attach_worksheet_workflows(document, fields)
         _attach_eligibility_workflows(document, fields)
