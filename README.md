@@ -1,5 +1,7 @@
 # forma
 
+https://meet-fomi.vercel.app/
+
 The friendly teal mascot is **Fomy**. The brand mark is a speech bubble with a lowercase **f**.
 
 Local multipage prototype: Next.js/React/TypeScript/Tailwind frontend and
