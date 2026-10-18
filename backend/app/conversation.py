@@ -9,7 +9,7 @@ import httpx
 from pydantic import ValidationError
 
 from .gemini_cache import delete_response, get_response, put_response, response_key
-from .models import FormField, SimplificationBatch
+from .models import FieldSimplification, FormField, SimplificationBatch
 from .text_utils import strip_form_reference
 
 
@@ -320,6 +320,40 @@ def _request_fields(fields: list[FormField]) -> list[dict]:
     ]
 
 
+_YES_NO_QUESTION = re.compile(
+    r"^(?:do|does|did|are|is|was|were|will|would|can|could|should|have|has|had)\b",
+    re.IGNORECASE,
+)
+
+
+def _repair_numeric_question(source: FormField, result: FieldSimplification) -> bool:
+    """Promote a lone numeric follow-up when Gemini wraps it in yes/no guidance."""
+    if (
+        source.answer_type not in {"number", "currency"}
+        or result.calculation is not None
+        or result.decision_tree is not None
+        or not _YES_NO_QUESTION.match(result.plain_question.strip())
+        or len(result.subquestions) != 1
+    ):
+        return False
+
+    numeric_question = result.subquestions[0]
+    if numeric_question.answer_type not in {"number", "currency"}:
+        return False
+    if numeric_question.options:
+        return False
+
+    result.plain_question = strip_form_reference(numeric_question.text)
+    if numeric_question.helper_text:
+        result.helper_text = numeric_question.helper_text
+    result.subquestions = []
+    logger.info(
+        "Repaired Gemini numeric question wrapper; field_id=%s",
+        source.field_id,
+    )
+    return True
+
+
 def _validate_batch(batch: SimplificationBatch, fields: list[FormField]) -> None:
     expected = {field.field_id: field for field in fields}
     returned = {result.field_id: result for result in batch.results}
@@ -328,6 +362,7 @@ def _validate_batch(batch: SimplificationBatch, fields: list[FormField]) -> None
 
     for field_id, result in returned.items():
         source = expected[field_id]
+        _repair_numeric_question(source, result)
         source_options = _answer_options(source)
         validation = result.validation
         text_kinds = {
@@ -354,11 +389,7 @@ def _validate_batch(batch: SimplificationBatch, fields: list[FormField]) -> None
         if source.answer_type in {"number", "currency"} and calculation is None:
             if result.subquestions:
                 raise ValueError("A numeric field without a calculation cannot contain subquestions.")
-            if re.match(
-                r"^(?:do|does|did|are|is|was|were|will|would|can|could|should|have|has|had)\b",
-                result.plain_question.strip(),
-                re.IGNORECASE,
-            ):
+            if _YES_NO_QUESTION.match(result.plain_question.strip()):
                 raise ValueError("A numeric field cannot use a yes/no plain question.")
         if calculation is not None:
             if tree is not None:
@@ -540,7 +571,7 @@ async def _request_batch(
         raise ValueError("Gemini returned empty text content.")
     batch = SimplificationBatch.model_validate_json(content)
     _validate_batch(batch, fields)
-    put_response(cache_key, content)
+    put_response(cache_key, batch.model_dump_json())
     return batch
 
 

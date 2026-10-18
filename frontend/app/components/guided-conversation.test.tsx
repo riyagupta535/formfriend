@@ -79,6 +79,24 @@ it('shows typed input while voice is disconnected and saves directly to the back
   expect(screen.getByText('Update this answer, then press Send to continue.')).toBeTruthy();
 });
 
+it('lets every question be skipped for now without requiring voice', async () => {
+  const requiredQuestion = { ...question, required: true };
+  const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+    if (url.endsWith('/next-question')) return reply({ ...state(0), question: requiredQuestion });
+    if (url.endsWith('/glossary')) return reply({ terms: [] });
+    if (url.endsWith('/skip')) return reply({ skipped: true, next: state(1, 'complete') });
+    throw Error(`unexpected ${url} ${init?.method}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  render(<GuidedConversation sessionId="s1" />);
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Skip for now →' }));
+
+  await waitFor(() => expect(screen.getByRole('link', { name: /Review my answers/ })).toBeTruthy());
+  const [, init] = fetchMock.mock.calls.find(([url]) => url.endsWith('/skip'))!;
+  expect(JSON.parse(init!.body as string)).toEqual({ question_id: 'kids', revision: 0 });
+});
+
 it('keeps extracted helper context out of the question bubble', async () => {
   const context = 'Form Complete Form W-4 so that your employer can withhold the correct federal income tax.';
   const contextQuestion = {
@@ -188,6 +206,56 @@ it('shows Gemini subquestions and saves their deterministic calculation', async 
   });
 });
 
+it('does not show date entry when a guided calculation owns a misclassified field', async () => {
+  const misclassified = {
+    ...question,
+    input_type: 'date',
+    simplified_question: 'Let’s add the two wage-table amounts.',
+    subquestions: [{ text: 'What is the first amount?', helper_text: null, answer_type: 'currency', options: [] }],
+    calculation: {
+      operation: 'add', input_question_indices: [0], factor: null,
+      source_question_numbers: [], source_field_ids: [], condition_question_index: null,
+      condition_answer: null, condition_zero_answers: [], condition_skip_answers: [],
+      condition_failure_message: null,
+    },
+  };
+  vi.stubGlobal('fetch', vi.fn((url: string) => url.endsWith('/glossary')
+    ? reply({ terms: [] }) : reply({ ...state(0), question: misclassified, prior_answers: {} })));
+
+  render(<GuidedConversation sessionId="s1" />);
+
+  expect(await screen.findByText('Let’s add the two wage-table amounts.')).toBeTruthy();
+  expect(screen.queryByLabelText('Date (month/day/year)')).toBeNull();
+  expect(screen.queryByLabelText('Type your answer')).toBeNull();
+});
+
+it('does not show date entry when a wage-table workflow owns a misclassified field', async () => {
+  const misclassified = {
+    ...question,
+    id: 'wage-table',
+    input_type: 'date',
+    simplified_question: 'Let’s calculate the amount from the wage table for you.',
+    table_lookup: {
+      lookup_id: 'w4-two-jobs',
+      source_page: 4,
+      intro_question: 'Let’s calculate the amount from the wage table for you.',
+      intro_helper_text: 'Answer a few questions and Forma will look up the amount.',
+      higher_wage_label: 'What are the annual wages from your higher-paying job?',
+      lower_wage_label: 'What are the annual wages from your lower-paying job?',
+      tables: [{ filing_status: 'Single or Married filing separately' }],
+    },
+  };
+  vi.stubGlobal('fetch', vi.fn((url: string) => url.endsWith('/glossary')
+    ? reply({ terms: [] }) : reply({ ...state(0), question: misclassified, prior_answers: {} })));
+
+  render(<GuidedConversation sessionId="s1" />);
+
+  expect(await screen.findByText('Let’s calculate the amount from the wage table for you.')).toBeTruthy();
+  expect(screen.getByText('What filing status will you use?')).toBeTruthy();
+  expect(screen.queryByLabelText('Date (month/day/year)')).toBeNull();
+  expect(calls.context.mock.calls.some(([text]) => text.includes('current question requests a date'))).toBe(false);
+});
+
 it('shows the existing worksheet workflow instead of a generic textbox', async () => {
   const worksheetQuestion = {
     ...question,
@@ -209,6 +277,7 @@ it('shows the existing worksheet workflow instead of a generic textbox', async (
   expect(await screen.findByRole('button', { name: /I already completed the worksheet/ })).toBeTruthy();
   expect(screen.getByRole('button', { name: /Help me work through the worksheet/ })).toBeTruthy();
   expect(screen.getByRole('button', { name: /leave this blank/ })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Skip for now →' })).toBeTruthy();
   expect(screen.queryByLabelText('Type your answer')).toBeNull();
   expect(screen.queryByText(worksheetQuestion.help_text)).toBeNull();
 });
@@ -344,6 +413,7 @@ it('offers date entry during voice and tells the agent how to handle spoken date
  vi.stubGlobal('fetch',vi.fn((url:string)=>url.endsWith('/glossary')?reply({terms:[]}):url.endsWith('/sessions/s1')?reply({fields:[]}):reply({...state(0),question:dateQuestion})));
  render(<GuidedConversation sessionId="s1"/>);
  const date=await screen.findByLabelText('Date (month/day/year)');
+ expect(screen.queryByLabelText('Type your answer or ask a question')).toBeNull();
  expect(calls.context.mock.calls.some(([text])=>text.includes('Accept spoken dates naturally'))).toBe(true);
  fireEvent.change(date,{target:{value:'2000-01-02'}});fireEvent.click(screen.getByRole('button',{name:'Use this date'}));
  expect(calls.send).toHaveBeenCalledWith('2000-01-02');expect(calls.start).not.toHaveBeenCalled();

@@ -274,6 +274,8 @@ min-height:75vh;
 padding:20px 30px 65px}
 .workflow.guide-workflow{min-height:0;padding-top:4px;padding-bottom:22px}
 .guide-workflow>.steps{margin-top:0;margin-bottom:18px}
+.workflow.review-workflow{min-height:0;padding-top:4px;padding-bottom:22px}
+.review-workflow>.steps{margin-top:0;margin-bottom:18px}
 .steps{display:flex;
 max-width:760px;
 justify-content:space-between;
@@ -303,6 +305,9 @@ line-height:1.12;
 margin:19px 0}
 .page-intro>p:last-child{font-size:14px;
 color:#636d60}
+.review-intro{margin:0 auto 12px}
+.review-intro h1{margin:0 0 8px}
+.review-intro>p:last-child{margin:0}
 .upload-layout{display:grid;
 grid-template-columns:1.5fr 1fr;
 gap:50px;
@@ -938,6 +943,9 @@ background:white}
 .chat-composer .voice-help { font-size: 13px; line-height: 1.6; }
 .chat-send-row { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-top: 18px; }
 .chat-back { font-size: 14px; color: #626f59; padding: 10px 0; }
+.question-skip-row { display: flex; justify-content: flex-end; margin-top: 14px; }
+.question-skip-row .text-button { color: #526f63; font-size: 14px; text-decoration: underline; text-underline-offset: 3px; }
+.question-skip-row .text-button:disabled { cursor: wait; opacity: .55; }
 .chat-send-row .button { gap: 24px; min-width: 150px; }
 .chat-send-row .button > span { font-size: 20px; line-height: 1; }
 .chat-composer-note { font-size: 13px; color: #97a28d; margin: 12px 0 0; text-align: right; }

@@ -38,6 +38,17 @@ function showAnswer(value: string | null) {
 type Line = { id: number; speaker: "friend" | "you"; text: string };
 type HistoryEntry = { question: Question; answer: string };
 
+function isStandaloneDateQuestion(question: Question | null | undefined) {
+  return !!question
+    && question.input_type === "date"
+    && !question.calculation
+    && !question.decision_tree
+    && !question.worksheet
+    && !question.eligibility_workflow
+    && !question.table_lookup
+    && !question.pay_period_calculation;
+}
+
 function typedValue(question: Question, text: string): unknown {
   const value = text.trim();
   const normalized = value.toLowerCase();
@@ -175,9 +186,9 @@ function Conversation({ sessionId }: { sessionId: string }) {
   useEffect(() => { toLatest(); measure(); }, [past, historyOpen]);
 
   useEffect(() => {
-    if (!live || state?.status !== "question" || state.question?.input_type !== "date") return;
+    if (!live || state?.status !== "question" || !isStandaloneDateQuestion(state.question)) return;
     conversation.sendContextualUpdate("The current question requests a date. Accept spoken dates naturally, including month names and ordinal days such as January second, two thousand. Convert a clearly stated full date to YYYY-MM-DD for save_answer. Numeric entry is month/day/year. Ask for missing month, day, or a four-digit year; do not guess an ambiguous day/month order or silently expand a two-digit year. If save_answer rejects an impossible or out-of-range date, ask for correction and stay on this question. The user can also use the date entry control; treat that date as their answer in this same conversation.");
-  }, [live, state?.status, state?.question?.id, state?.question?.input_type]);
+  }, [live, state?.status, state?.question]);
 
   // Client tools: the browser binds the session and revision so the model never handles them.
   useConversationClientTool("get_next_question", async () => {
@@ -327,6 +338,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
   const guidedDecision = !!question?.decision_tree;
   const specializedWorkflow = !!(question?.worksheet || question?.eligibility_workflow || question?.table_lookup || question?.pay_period_calculation);
   const guidedInteraction = guidedCalculation || guidedDecision || specializedWorkflow;
+  const standaloneDateQuestion = isStandaloneDateQuestion(question);
   const decisionNode = question?.decision_tree ? currentDecisionNode(question.decision_tree, decisionPath) : null;
 
   const complete = state?.status === "complete";
@@ -383,7 +395,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
           {question && state?.status === "question" && <div className="chat-message chat-friend-current">
             <div className="chat-message-meta"><span className="chat-speaker">Now answering</span>{reference?.section && <span>{reference.section.toUpperCase()}</span>}</div>
             <h2 aria-live="polite">{question.simplified_question}</h2>
-            {question.input_type === "date" && <DateEntry key={question.id} busy={saving || starting || conversation.status === "connecting"}
+            {standaloneDateQuestion && <DateEntry key={question.id} busy={saving || starting || conversation.status === "connecting"}
               onSubmit={value => void submitAnswer(value)} />}
             {question.subquestions?.length && !guidedCalculation && !guidedDecision ? <div className="subquestion-guide">
               <strong>Let’s break it down:</strong>
@@ -443,16 +455,19 @@ function Conversation({ sessionId }: { sessionId: string }) {
               <blockquote>{question.original_text}</blockquote>
             </details>
             {error && <div className="error-message" role="alert">{error}</div>}
+            {!editingPrevious && <div className="question-skip-row">
+              <button type="button" className="text-button" disabled={saving || starting || conversation.status === "connecting"}
+                onClick={() => void skipCurrentQuestion()}>{saving ? "Skipping…" : "Skip for now →"}</button>
+            </div>}
           </div>}
           {state?.status === "complete" && <div className="chat-message chat-friend-current"><h2>You’re all done. Great work!</h2><p>Look over your answers before you download your form.</p></div>}
 
         {said.you && <p className="guide-heard"><span>You said</span>“{said.you}”</p>}
       <form className="guide-composer" onSubmit={send}>
-        {!guidedInteraction && (live || state?.status === "question") && <>
+        {!guidedInteraction && !standaloneDateQuestion && (live || state?.status === "question") && <>
           <label htmlFor="typed-answer">Type your answer or ask a question</label>
-          {question?.input_type === "date" && <p id="date-format-help" className="chat-composer-note">Use month/day/year (MM/DD/YYYY), for example 01/02/2000, or write January 2, 2000. Include the full year.</p>}
           <div className="guide-typed">
-            <input id="typed-answer" aria-describedby={question?.input_type === "date" ? "date-format-help" : undefined} aria-label={live ? "Type your answer or ask a question" : "Type your answer"} value={typed} onChange={event => {
+            <input id="typed-answer" aria-label={live ? "Type your answer or ask a question" : "Type your answer"} value={typed} onChange={event => {
               setTyped(event.target.value);
               if (live) conversation.sendUserActivity();
             }} placeholder={live ? "Speak or type here—same conversation" : "Type your answer here"} autoComplete="off"
