@@ -16,13 +16,13 @@ export default function FooterBrand() {
       const footerTop = footer.getBoundingClientRect().top + window.scrollY;
       setScrollable(footerTop > document.documentElement.clientHeight + 1);
     };
-    const observer = new ResizeObserver(measure);
-    observer.observe(document.body);
-    observer.observe(document.documentElement);
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(document.body);
+    observer?.observe(document.documentElement);
     window.addEventListener("resize", measure);
     measure();
     return () => {
-      observer.disconnect();
+      observer?.disconnect();
       window.removeEventListener("resize", measure);
     };
   }, []);
