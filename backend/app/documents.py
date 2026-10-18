@@ -81,7 +81,8 @@ def export_document(session, data):
                             widget.update()
             printed = [field for field in session.fields if field.extraction == 'printed']
             for field in printed:
-                text = f'{field.original_question} (original page {field.source_page})\n\n{field.user_response or "[No answer provided]"}'
+                reference = f'original page {field.source_page}' if field.source_page > 0 else 'source page not provided'
+                text = f'{field.original_question} ({reference})\n\n{field.user_response or "[No answer provided]"}'
                 lines = []
                 for line in text.splitlines():
                     lines.extend(textwrap.wrap(line, width=80) or [''])

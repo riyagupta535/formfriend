@@ -146,11 +146,17 @@ async def upload(file: UploadFile | None = File(default=None),
 
 @app.get("/sessions/{key}", response_model=Session)
 def retrieve(key: str):
-    return get_session(key)
+    session = get_session(key)
+    if session.agent_state:
+        from .agent_tools import visible_fields
+        return session.model_copy(update={"fields": visible_fields(session)})
+    return session
 
 @app.get("/sessions/{key}/export")
 async def export(key: str):
     session = get_session(key)
+    if session.agent_state:
+        raise HTTPException(409, "Use the final review PDF export for this agent session.")
     data, content_type = await asyncio.to_thread(export_document, session, documents[key])
     filename = 'formfriend-answers.txt' if content_type.startswith('text/plain') else 'formfriend-' + session.filename
     return Response(data, media_type=content_type, headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote(filename)})
@@ -159,7 +165,7 @@ async def export(key: str):
 async def source(key: str, field_id: str):
     session = get_session(key)
     field = next((f for f in session.fields if f.field_id == field_id), None)
-    if field is None or session.document_type != 'pdf':
+    if field is None or session.document_type != 'pdf' or len(field.source_rect) != 4 or field.source_page < 1:
         raise HTTPException(404, 'Source preview is available for PDF fields only.')
     def render():
         with pymupdf.open(stream=documents[key], filetype='pdf') as document:
@@ -181,6 +187,8 @@ async def speech(key: str, field_id: str):
 @app.post("/sessions/{key}/fields/{field_id}", response_model=Session)
 def answer(key: str, field_id: str, answer: Answer):
     session = get_session(key)
+    if session.agent_state:
+        raise HTTPException(409, "Use the agent answer tools or final review for this session.")
     field = next((f for f in session.fields if f.field_id == field_id), None)
     if field is None:
         raise HTTPException(404, "Field not found.")
@@ -211,3 +219,6 @@ app.include_router(voice_router)
 
 from .review import router as review_router
 app.include_router(review_router)
+
+from .agent_tools import router as agent_router
+app.include_router(agent_router)

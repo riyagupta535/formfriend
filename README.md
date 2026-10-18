@@ -203,3 +203,12 @@ Scanned PDFs and screenshots require the OCR dependencies. Use Python 3.11 or
 3.12 for the pinned `rapidocr-onnxruntime` package; it does not support Python
 3.13. Create your backend virtual environment with Python 3.12, then install
 `backend/requirements.txt` before starting the backend.
+
+## ElevenLabs agent backend tools
+
+The Step 5 question-schema adapter and deterministic agent tools are implemented.
+See [the agent tool contract](docs/agent-tools.md) for routes, canonical answer
+formats, conditional-question behavior, PDF mapping, and final review integration.
+Try `examples/step5-questions.json` with `POST /agent/sessions`. These APIs do not
+require an ElevenLabs agent or an LLM to test. Connecting the configured agent and
+passing the session ID from the frontend remain integration tasks.

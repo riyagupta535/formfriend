@@ -10,6 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@elevenlabs/react": "1.18.0",
     "next": "^16.4.2",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"

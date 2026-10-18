@@ -1,0 +1,29 @@
+{
+  "questions": [
+    {
+      "id": "filing_status",
+      "original_text": "Select your filing status.",
+      "simplified_question": "What is your filing status?",
+      "input_type": "choice",
+      "options": ["single", "married_filing_jointly"],
+      "depends_on": [],
+      "show_if": null,
+      "required": true,
+      "pdf_field_name": null
+    },
+    {
+      "id": "spouse_employment",
+      "original_text": "Complete this step if ... married filing jointly and your spouse also works.",
+      "simplified_question": "Does your spouse also work?",
+      "input_type": "boolean",
+      "depends_on": ["filing_status"],
+      "show_if": {
+        "field": "filing_status",
+        "operator": "equals",
+        "value": "married_filing_jointly"
+      },
+      "required": false,
+      "pdf_field_name": null
+    }
+  ]
+}

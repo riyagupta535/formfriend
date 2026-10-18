@@ -1,5 +1,6 @@
 from typing import Literal
 from pydantic import BaseModel, Field
+from .agent_models import AgentState
 
 class FormField(BaseModel):
     field_id: str
@@ -21,10 +22,11 @@ class FormField(BaseModel):
     user_response: str | None = None
     interpreted_value: str | None = None
     confirmed: bool = False
-    status: Literal["unanswered", "answered", "skipped"] = "unanswered"
+    status: Literal["unanswered", "answered", "skipped", "not_applicable", "blocked"] = "unanswered"
 
 class Session(BaseModel):
     session_id: str
+    agent_state: AgentState | None = None
     filename: str
     document_type: Literal["pdf", "docx", "image"] = "pdf"
     mode: Literal["mock", "step-5-preview"]

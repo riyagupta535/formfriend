@@ -843,3 +843,25 @@ background:white}
 .review-confirm input{width:22px;height:22px;min-width:22px;accent-color:#24594c;margin-top:2px}
 .review-save-note{font-size:.85rem!important;line-height:1.5;color:#52645e}
 .review-missing{padding:12px;border-radius:12px;background:#fff3da;color:#60491a;font-size:.95rem!important}
+
+/* Voice-guided conversation (/guide) */
+.guide-body { display: grid; grid-template-columns: minmax(0, 1fr) 240px; gap: 22px; padding: 26px 30px 20px; }
+.guide-main { min-width: 0; display: flex; flex-direction: column; gap: 18px; }
+.guide-options { margin: 12px 0 0; padding-left: 20px; font-size: 14px; line-height: 1.8; }
+.guide-transcript { max-height: 360px; overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 12px; scrollbar-width: thin; }
+.guide-side { text-align: center; }
+.guide-side .mascot { width: 220px; max-width: 100%; margin: 0 auto; }
+.guide-learned { text-align: left; margin-top: 16px; padding: 14px 16px; border: 1px solid #eedeb4; border-radius: 14px; background: #fff9ea; }
+.guide-learned h3 { font-size: 12px; margin: 0 0 8px; color: #9a7a37; }
+.guide-learned details { border-top: 1px solid #f1e6c8; padding: 8px 0; }
+.guide-learned summary { cursor: pointer; font-size: 13px; font-weight: 600; }
+.guide-learned p { font-size: 12px; line-height: 1.6; margin: 6px 0 0; }
+.guide-learned .guide-example { color: #7c6a40; }
+.guide-typed { display: flex; gap: 10px; }
+.guide-typed input { flex: 1; min-width: 0; min-height: 48px; padding: 12px 16px; font: inherit; font-size: 14px; border: 1px solid #d6dfcf; border-radius: 12px; background: #fff; }
+.guide-start { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+@media (max-width: 760px) {
+  .guide-body { grid-template-columns: 1fr; padding: 20px 16px; }
+  .guide-side { order: -1; }
+  .guide-side .mascot { width: 120px; }
+}
