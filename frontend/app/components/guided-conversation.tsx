@@ -145,32 +145,32 @@ function Conversation({ sessionId }: { sessionId: string }) {
 
   async function send(event: React.FormEvent) {
     event.preventDefault();
-    if (!typed.trim() || !question || state?.status !== "question") return;
+    const text = typed.trim();
+    if (!text || saving || starting || conversation.status === "connecting") return;
     setError("");
     if (live) {
-      conversation.sendUserMessage(typed.trim());
-      setTyped("");
+      try {
+        conversation.sendUserMessage(text);
+        setLines(current => [...current, {id: ++lineId.current, speaker: "you", text}]);
+        setTyped("");
+      } catch {
+        setError("Your message could not be sent. Your draft is still here; please try again.");
+      }
       return;
     }
+    if (!question || state?.status !== "question") return;
     setSaving(true);
     try {
-      const result = await tool(`${sessionId}/answers`, post({
-        question_id: question.id,
-        value: typedValue(question, typed),
-        raw_response: typed.trim(),
-        revision: revision.current,
-      }));
+      const result = await tool(`${sessionId}/answers`, post({question_id: question.id,
+        value: typedValue(question, text), raw_response: text, revision: revision.current}));
       if (result.ok) {
         track(result.body.next);
+        setLines(current => [...current, {id: ++lineId.current, speaker: "you", text}]);
         setTyped("");
-      } else {
-        setError(JSON.parse(result.text).error);
-      }
+      } else setError(JSON.parse(result.text).error);
     } catch {
-      setError("Can’t reach Form Friend. Make sure the backend is running on port 8000.");
-    } finally {
-      setSaving(false);
-    }
+      setError("Can’t reach Form Friend. Your draft is still here; please try again.");
+    } finally { setSaving(false); }
   }
 
   const progress = state?.progress ?? {};
@@ -218,16 +218,21 @@ function Conversation({ sessionId }: { sessionId: string }) {
         </aside>
       </div>
       <form className="chat-composer" onSubmit={send}>
-        {state?.status === "question" && <>
-          <label htmlFor="typed-answer" className="sr-only">Type your answer</label>
+        {(live || state?.status === "question") && <>
+          <label htmlFor="typed-answer">Type your answer or ask a question</label>
           <div className="guide-typed">
-            <input id="typed-answer" value={typed} onChange={event => setTyped(event.target.value)} placeholder="Type your answer here" autoComplete="off" disabled={saving} />
-            <button type="submit" className="button secondary" disabled={!typed.trim() || saving}>{saving ? "Saving…" : "Send"}</button>
+            <input id="typed-answer" value={typed} onChange={event => {
+              setTyped(event.target.value);
+              if (live) conversation.sendUserActivity();
+            }} placeholder={live ? "Speak or type here—same conversation" : "Type your answer here"} autoComplete="off"
+              disabled={saving || starting || conversation.status === "connecting"} />
+            <button type="submit" className="button secondary" disabled={!typed.trim() || saving || starting || conversation.status === "connecting"}>{saving ? "Saving…" : "Send"}</button>
           </div>
+          {live && <p className="chat-composer-note">You can speak and type in this conversation. Your microphone is {conversation.isMuted ? "off" : "on"}.</p>}
         </>}
         {!live ? <div className="chat-send-row">
           <span className="chat-composer-note">Form Friend will ask to use your microphone.</span>
-          <button type="button" className="button primary" disabled={starting || !state || conversation.status === "connecting"} onClick={() => void start()}>
+          <button type="button" className="button primary" disabled={starting || saving || !state || conversation.status === "connecting"} onClick={() => void start()}>
             {starting || conversation.status === "connecting" ? "Starting…" : hasStarted || (state?.revision ?? 0) > 0 ? "Keep going" : "Start talking"}<span aria-hidden="true">●</span></button>
         </div> : <>
           <div className="chat-send-row">

@@ -1,11 +1,11 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 
-const calls = vi.hoisted(() => ({start:vi.fn().mockResolvedValue('conversation'),context:vi.fn()}));
+const calls = vi.hoisted(() => ({start:vi.fn().mockResolvedValue('conversation'),context:vi.fn(),send:vi.fn(),activity:vi.fn(),mute:vi.fn(),status:'disconnected',onMessage:undefined as undefined | ((event:{message:string;source:string})=>void)}));
 const tools: Record<string, (params: Record<string, unknown>) => Promise<string>> = {};
 vi.mock('@elevenlabs/react', () => ({
   ConversationProvider: ({ children }: { children: React.ReactNode }) => children,
-  useConversation: () => ({ status: 'disconnected', isSpeaking: false, isMuted: false, startSession: calls.start, sendContextualUpdate:calls.context, endSession: vi.fn(), sendUserMessage: vi.fn(), setMuted: vi.fn() }),
+  useConversation: (options: {onMessage:typeof calls.onMessage}) => {calls.onMessage=options.onMessage;return ({ status: calls.status, isSpeaking: false, isMuted: false, startSession: calls.start, sendContextualUpdate:calls.context, endSession: vi.fn(), sendUserMessage: calls.send, sendUserActivity:calls.activity, setMuted:calls.mute });},
   useConversationClientTool: (name: string, handler: (params: Record<string, unknown>) => Promise<string>) => { tools[name] = handler; },
 }));
 import GuidedConversation from './guided-conversation';
@@ -15,7 +15,7 @@ const question = { id: 'kids', original_text: 'Qualifying children under 17', si
 const state = (revision: number, status = 'question') => ({ session_id: 's1', revision, status, question: status === 'question' ? question : null,
   progress: { answered: revision, unanswered: 1 - revision, skipped: 0, blocked: 0, not_applicable: 0 } });
 const reply = (body: object, ok = true, status = 200) => Promise.resolve({ ok, status, json: async () => body });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); calls.start.mockClear();calls.context.mockClear(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); calls.start.mockClear();calls.context.mockClear();calls.send.mockReset();calls.activity.mockClear();calls.mute.mockClear();calls.status='disconnected'; });
 
 it('binds session and revision, parses JSON values, and shows learned words', async () => {
   const fetchMock = vi.fn((url: string, init?: RequestInit) => {
@@ -64,7 +64,7 @@ it('shows typed input while voice is disconnected and saves directly to the back
   vi.stubGlobal('fetch', fetchMock);
   render(<GuidedConversation sessionId="s1" />);
 
-  const input = await screen.findByRole('textbox', { name: 'Type your answer' });
+  const input = await screen.findByRole('textbox', { name: 'Type your answer or ask a question' });
   fireEvent.change(input, { target: { value: '2' } });
   fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 
@@ -97,4 +97,47 @@ it('skips the introduction for a session with existing saved progress',async()=>
  fireEvent.click(await screen.findByRole('button',{name:/Keep going/}));
  await waitFor(()=>expect(calls.start).toHaveBeenCalledOnce());
  expect(calls.start.mock.calls[0][0].overrides.agent.firstMessage).toBe('How many children under 17?');
+});
+
+it('keeps speech and typed messages in the same live conversation without restarting or saving directly',async()=>{
+ calls.status='connected';
+ const fetchMock=vi.fn((url:string)=>url.endsWith('/glossary')?reply({terms:[]}):reply(state(0)));
+ vi.stubGlobal('fetch',fetchMock);
+ render(<GuidedConversation sessionId="s1"/>);
+ await screen.findByText('How many children under 17?');
+ act(()=>calls.onMessage!({source:'user',message:'I have two children'}));
+ const input=screen.getByRole('textbox',{name:'Type your answer or ask a question'});
+ fireEvent.change(input,{target:{value:'What does qualifying mean?'}});
+ expect(calls.activity).toHaveBeenCalledOnce();
+ fireEvent.click(screen.getByRole('button',{name:'Send'}));
+ expect(calls.send).toHaveBeenCalledWith('What does qualifying mean?');
+ expect(screen.getByText('I have two children')).toBeTruthy();
+ expect(screen.getByText('What does qualifying mean?')).toBeTruthy();
+ act(()=>calls.onMessage!({source:'user',message:'Yes, both are under seventeen'}));
+ expect(screen.getByText('Yes, both are under seventeen')).toBeTruthy();
+ expect(calls.start).not.toHaveBeenCalled();expect(calls.mute).not.toHaveBeenCalled();
+ expect(fetchMock.mock.calls.some(([url])=>url.endsWith('/answers'))).toBe(false);
+ expect((input as HTMLInputElement).value).toBe('');
+});
+
+it('keeps the typed draft when sending to the live conversation fails',async()=>{
+ calls.status='connected';calls.send.mockImplementation(()=>{throw Error('Disconnected');});
+ vi.stubGlobal('fetch',vi.fn((url:string)=>url.endsWith('/glossary')?reply({terms:[]}):reply(state(0))));
+ render(<GuidedConversation sessionId="s1"/>);
+ await screen.findByText('How many children under 17?');
+ const input=screen.getByRole('textbox',{name:'Type your answer or ask a question'});
+ fireEvent.change(input,{target:{value:'My draft'}});fireEvent.click(screen.getByRole('button',{name:'Send'}));
+ expect((input as HTMLInputElement).value).toBe('My draft');
+ expect(screen.getByRole('alert').textContent).toContain('could not be sent');
+});
+
+it('preserves typed-only answer saving when voice is disconnected',async()=>{
+ const fetchMock=vi.fn((url:string)=>url.endsWith('/glossary')?reply({terms:[]}):url.endsWith('/answers')?reply({saved:true,next:state(1,'complete')}):reply(state(0)));
+ vi.stubGlobal('fetch',fetchMock);
+ render(<GuidedConversation sessionId="s1"/>);
+ const input=await screen.findByRole('textbox',{name:'Type your answer or ask a question'});
+ fireEvent.change(input,{target:{value:'2'}});fireEvent.click(screen.getByRole('button',{name:'Send'}));
+ await screen.findByRole('link',{name:/Review my answers/});
+ expect(calls.send).not.toHaveBeenCalled();expect(calls.start).not.toHaveBeenCalled();
+ expect(screen.getByText('2')).toBeTruthy();
 });
