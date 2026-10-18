@@ -212,6 +212,6 @@ dialogue context is kept only while the guide page stays open.
 
 ## Typed conversation validation
 
-While voice is connected, typed messages go to the same ElevenLabs conversation and its answer-saving tools. Without voice, the UI posts raw text, current question ID, and revision to `POST /agent/sessions/{key}/typed-answers`. The configured StepFun model checks relevance and specificity, interprets clear answers into canonical types, or returns a clarification/explanation without saving. The shared deterministic type, option and generated field rules still run before saving. Progress/revision are checked again after the provider call so a concurrent voice answer cannot be overwritten.
+Typed replies use the same voice-enabled ElevenLabs session and answer-saving tools as speech. Sending the first typed message while disconnected starts a voice-enabled WebSocket session and requires microphone permission. Once connected, users can speak or type, mute/unmute independently, and keep the same connection and transcript. Typing never starts a text-only mode or saves raw answers directly. No StepFun validation request is made; backend types, options and field rules still run in `save_answer`.
 
-A missing key, unavailable provider or malformed model response leaves the answer unsaved. Meaning checks are model judgments and can be imperfect; review answers at the end. No per-answer confirmation is added.
+The agent handles relevance checks, explanations and follow-up questions for both inputs. Taking a break ends the connection; resuming refreshes the saved question and recent transcript context without repeating the introduction.

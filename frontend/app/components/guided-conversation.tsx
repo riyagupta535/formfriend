@@ -38,7 +38,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
   const [typed, setTyped] = useState("");
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const connecting = useRef(false);
   const [hasStarted, setHasStarted] = useState(false);
   const revision = useRef<number | undefined>(undefined);
   const lineId = useRef(0);
@@ -92,7 +92,10 @@ function Conversation({ sessionId }: { sessionId: string }) {
     return result.text;
   });
 
-  async function start() {
+  async function start(): Promise<boolean> {
+    if (live) return true;
+    if (connecting.current) return false;
+    connecting.current = true;
     setStarting(true); setError("");
     try {
       // Refresh after a break: the last tool call may have saved an answer just before disconnecting.
@@ -106,7 +109,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
       const firstMessage = latest.body.status === "complete"
         ? "Your answers are ready to review."
         : latest.body.question?.simplified_question || "Let’s continue with the question we were working on.";
-      await conversation.startSession({ signedUrl: body.signed_url, connectionType: "websocket",
+      await conversation.startSession({ signedUrl: body.signed_url, connectionType: "websocket", textOnly: false,
         ...(resuming ? {overrides: {agent: {firstMessage}}} : {}),
       });
       setHasStarted(true);
@@ -118,40 +121,27 @@ function Conversation({ sessionId }: { sessionId: string }) {
         "do not invent missing details or silently save unfinished answers. Recent transcript: " +
         JSON.stringify(lines.slice(-12).map(line => ({speaker:line.speaker,text:line.text.slice(0,1500)})))
       );
+      return true;
     } catch (e) {
       setError(e instanceof TypeError ? "Can’t reach Form Friend. Make sure the backend is running on port 8000." : (e as Error).message);
-    } finally { setStarting(false); }
+      return false;
+    } finally { setStarting(false); connecting.current = false; }
   }
 
   async function send(event: React.FormEvent) {
     event.preventDefault();
     const text = typed.trim();
-    if (!text || saving || starting || conversation.status === "connecting") return;
+    if (!text || connecting.current || starting || conversation.status === "connecting") return;
     setError("");
-    if (live) {
-      try {
-        conversation.sendUserMessage(text);
-        setLines(current => [...current, {id: ++lineId.current, speaker: "you", text}]);
-        setTyped("");
-      } catch {
-        setError("Your message could not be sent. Your draft is still here; please try again.");
-      }
-      return;
-    }
-    if (!question || state?.status !== "question") return;
-    setSaving(true);
+    // Both inputs share one voice-enabled session and its answer-validation tools.
+    if (!live && !await start()) return;
     try {
-      const result = await tool(`${sessionId}/typed-answers`, post({question_id: question.id,
-        text, revision: revision.current}));
-      if (result.ok) {
-        track(result.body.next);
-        setLines(current => [...current, {id: ++lineId.current, speaker: "you", text},
-          ...(result.body.reply ? [{id: ++lineId.current, speaker: "friend" as const, text: result.body.reply}] : [])]);
-        setTyped("");
-      } else setError(JSON.parse(result.text).error);
+      conversation.sendUserMessage(text);
+      setLines(current => [...current, {id: ++lineId.current, speaker: "you", text}]);
+      setTyped("");
     } catch {
-      setError("Can’t reach Form Friend. Your draft is still here; please try again.");
-    } finally { setSaving(false); }
+      setError("Your message could not be sent. Your draft is still here; please try again.");
+    }
   }
 
   const progress = state?.progress ?? {};
@@ -166,7 +156,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
       {state?.status === "complete" && <Link className="button primary" href="/review" onClick={() => conversation.endSession()}>Review my answers <span>↗</span></Link>}
     </div>
     <div className="chat-panel">
-      <div className="chat-toolbar"><span>{live ? (conversation.isSpeaking ? "Form Friend is talking" : "Listening to you") : "Not started"}</span><span>{done} of {total} done</span></div>
+      <div className="chat-toolbar"><span>{live ? (conversation.isSpeaking ? "Form Friend is talking" : (conversation.isMuted ? "Microphone off — type anytime" : "Listening to you")) : "Not started"}</span><span>{done} of {total} done</span></div>
       <progress value={done} max={Math.max(total, 1)} aria-label="Questions done" />
       <div className="guide-body">
         <div className="guide-main">
@@ -206,14 +196,14 @@ function Conversation({ sessionId }: { sessionId: string }) {
               setTyped(event.target.value);
               if (live) conversation.sendUserActivity();
             }} placeholder={live ? "Speak or type here—same conversation" : "Type your answer here"} autoComplete="off"
-              disabled={saving || starting || conversation.status === "connecting"} />
-            <button type="submit" className="button secondary" disabled={!typed.trim() || saving || starting || conversation.status === "connecting"}>{saving ? "Saving…" : "Send"}</button>
+              disabled={starting || conversation.status === "connecting"} />
+            <button type="submit" className="button secondary" disabled={!typed.trim() || starting || conversation.status === "connecting"}>Send</button>
           </div>
-          {live && <p className="chat-composer-note">You can speak and type in this conversation. Your microphone is {conversation.isMuted ? "off" : "on"}.</p>}
+          {live && <p className="chat-composer-note">{`You can speak and type in this conversation. Your microphone is ${conversation.isMuted ? "off" : "on"}.`}</p>}
         </>}
         {!live ? <div className="chat-send-row">
-          <span className="chat-composer-note">Form Friend will ask to use your microphone.</span>
-          <button type="button" className="button primary" disabled={starting || saving || !state || conversation.status === "connecting"} onClick={() => void start()}>
+          <span className="chat-composer-note">Speak or type in the same conversation. Starting requires microphone permission.</span>
+          <button type="button" className="button primary" disabled={starting || !state || conversation.status === "connecting"} onClick={() => void start()}>
             {starting || conversation.status === "connecting" ? "Starting…" : hasStarted || (state?.revision ?? 0) > 0 ? "Keep going" : "Start talking"}<span aria-hidden="true">●</span></button>
         </div> : <>
           <div className="chat-send-row">
