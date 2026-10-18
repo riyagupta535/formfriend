@@ -1152,3 +1152,6 @@ background:white}
 .guide-bubble > .chat-message::after { display: none; }
 .guide-bubble .guide-composer { margin-top: 22px; }
 .guide-conversation-log { margin-top: 20px; }
+
+/* Reverse the guide mascot and its mouth together; keep other pages unchanged. */
+.mascot.mascot-flipped img, .mascot.mascot-flipped .mascot-mouth { transform: scaleX(1); }

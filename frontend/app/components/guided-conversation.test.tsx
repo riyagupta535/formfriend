@@ -1,11 +1,11 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 
-const calls = vi.hoisted(() => ({start:vi.fn().mockResolvedValue('conversation'),context:vi.fn(),send:vi.fn(),activity:vi.fn(),mute:vi.fn(),status:'disconnected',onMessage:undefined as undefined | ((event:{message:string;source:string})=>void)}));
+const calls = vi.hoisted(() => ({start:vi.fn().mockResolvedValue('conversation'),context:vi.fn(),send:vi.fn(),activity:vi.fn(),mute:vi.fn(),status:'disconnected',speaking:false,volume:vi.fn(()=>0.25),onMessage:undefined as undefined | ((event:{message:string;source:string})=>void)}));
 const tools: Record<string, (params: Record<string, unknown>) => Promise<string>> = {};
 vi.mock('@elevenlabs/react', () => ({
   ConversationProvider: ({ children }: { children: React.ReactNode }) => children,
-  useConversation: (options: {onMessage:typeof calls.onMessage}) => {calls.onMessage=options.onMessage;return ({ status: calls.status, isSpeaking: false, isMuted: false, startSession: calls.start, sendContextualUpdate:calls.context, endSession: vi.fn(), sendUserMessage: calls.send, sendUserActivity:calls.activity, setMuted:calls.mute });},
+  useConversation: (options: {onMessage:typeof calls.onMessage}) => {calls.onMessage=options.onMessage;return ({ status: calls.status, isSpeaking: calls.speaking, getOutputVolume: calls.volume, isMuted: false, startSession: calls.start, sendContextualUpdate:calls.context, endSession: vi.fn(), sendUserMessage: calls.send, sendUserActivity:calls.activity, setMuted:calls.mute });},
   useConversationClientTool: (name: string, handler: (params: Record<string, unknown>) => Promise<string>) => { tools[name] = handler; },
 }));
 import GuidedConversation from './guided-conversation';
@@ -15,7 +15,7 @@ const question = { id: 'kids', original_text: 'Qualifying children under 17', si
 const state = (revision: number, status = 'question') => ({ session_id: 's1', revision, status, question: status === 'question' ? question : null,
   progress: { answered: revision, unanswered: 1 - revision, skipped: 0, blocked: 0, not_applicable: 0 } });
 const reply = (body: object, ok = true, status = 200) => Promise.resolve({ ok, status, json: async () => body });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); calls.start.mockClear();calls.context.mockClear();calls.send.mockReset();calls.activity.mockClear();calls.mute.mockClear();calls.status='disconnected'; });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); calls.start.mockClear();calls.context.mockClear();calls.send.mockReset();calls.activity.mockClear();calls.mute.mockClear();calls.status='disconnected';calls.speaking=false; });
 
 it('binds session and revision, parses JSON values, and shows learned words', async () => {
   const fetchMock = vi.fn((url: string, init?: RequestInit) => {
@@ -265,4 +265,24 @@ it('shows what Forma says in the speech bubble and earlier answers as greyed his
   expect(screen.getByText('“two”')).toBeTruthy();
   act(() => calls.onMessage?.({ message: 'Got it.', source: 'ai' }));
   expect(screen.queryByText('“two”')).toBeNull();
+});
+
+
+it('flips the guide mascot and animates its mouth and tongue only during agent speech', async () => {
+  calls.status = 'connected'; calls.speaking = true;
+  let tick: FrameRequestCallback = () => {};
+  vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => { tick = callback; return 1; }));
+  vi.stubGlobal('cancelAnimationFrame', vi.fn());
+  Object.defineProperty(window, 'matchMedia', { configurable: true, value: vi.fn(() => ({ matches: false })) });
+  vi.stubGlobal('fetch', vi.fn((url: string) => url.endsWith('/glossary') ? reply({ terms: [] }) : reply(state(0))));
+  const view = render(<GuidedConversation sessionId="s1" />);
+  await screen.findByText('How many children under 17?');
+  expect(view.container.querySelector('.guide-mascot .mascot-flipped')).toBeTruthy();
+  act(() => tick(40));
+  const tongue = view.container.querySelector('.mascot-tongue');
+  expect(tongue).toBeTruthy();
+  expect(Number(tongue?.getAttribute('ry'))).toBeGreaterThan(0);
+  calls.speaking = false;
+  view.rerender(<GuidedConversation sessionId="s1" />);
+  expect(view.container.querySelector('.mascot-mouth')).toBeNull();
 });

@@ -3,6 +3,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { ConversationProvider, useConversation, useConversationClientTool } from "@elevenlabs/react";
 import Mascot from "./mascot";
+import { useAgentSpeechMouth } from "../../lib/useAgentSpeechMouth";
 import GuidedCalculation, { type CalculationSpec, type GuidedQuestion } from "./guided-calculation";
 import { chooseDecisionAnswer, currentDecisionNode, type DecisionStep, type DecisionTree } from "./decision-tree";
 
@@ -101,6 +102,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
       : typeof message === "string" ? message : "The voice guide had a problem. Please try again."),
   });
   const live = conversation.status === "connected";
+  const mouthOpen = useAgentSpeechMouth(live && conversation.isSpeaking, conversation.getOutputVolume);
 
   function track(next: NextState) { revision.current = next.revision; latestState.current = next; setState(next); void loadPast(); }
 
@@ -350,7 +352,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
     </section>}
 
     <div className="guide-scene">
-      <div className="guide-mascot"><Mascot talking={live && conversation.isSpeaking} /></div>
+      <div className="guide-mascot"><Mascot flipped talking={live && conversation.isSpeaking} mouthOpen={mouthOpen} /></div>
       <div className="guide-bubble">
         {said.friend && <p className="guide-says" aria-live="polite"><span>Forma</span>{said.friend}</p>}
           {state?.status === "loading" && <div className="chat-message chat-friend-current" role="status" aria-live="polite">
