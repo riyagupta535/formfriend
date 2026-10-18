@@ -32,6 +32,8 @@ VALIDATION_KINDS = [
     "email",
     "phone_number",
     "us_postal_code",
+    "street_address",
+    "city_state_zip",
     "us_state_code",
     "integer",
     "decimal_number",
@@ -52,7 +54,8 @@ Rules:
 - Preserve names, numbers, dates, money thresholds, and legal distinctions.
 - Preserve supplied answer choices exactly and in the same order.
 - Classify the expected answer using exactly one supported validation kind. Use "none" when no safe deterministic rule applies.
-- Validation kinds are closed: none, person_name, social_security_number, employer_identification_number, taxpayer_identification_number, email, phone_number, us_postal_code, us_state_code, integer, decimal_number, year, past_date, and future_date.
+- Validation kinds are closed: none, person_name, social_security_number, employer_identification_number, taxpayer_identification_number, email, phone_number, us_postal_code, us_state_code, street_address, city_state_zip, integer, decimal_number, year, past_date, and future_date.
+- Use street_address for a street/home address line (number and street) and city_state_zip for a combined city, state, and ZIP field.
 - Use taxpayer_identification_number only when either an SSN or EIN is accepted. Do not confuse a field identifier or account number with a government identifier.
 - Only set numeric or length limits that are explicitly printed in the source. Otherwise use null. Write a short, plain validation message that tells the user what format is expected without exposing or inventing personal data.
 - Do not answer the question and do not give legal, tax, or benefits advice.
@@ -333,7 +336,7 @@ def _validate_batch(batch: SimplificationBatch, fields: list[FormField]) -> None
         text_kinds = {
             "person_name", "social_security_number", "employer_identification_number",
             "taxpayer_identification_number", "email", "phone_number",
-            "us_postal_code", "us_state_code", "year",
+            "us_postal_code", "us_state_code", "year", "street_address", "city_state_zip",
         }
         if validation.kind in text_kinds and source.answer_type != "text":
             raise ValueError("Gemini selected a text validator for a non-text field.")

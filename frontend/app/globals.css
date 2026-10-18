@@ -1148,3 +1148,15 @@ background:white}
 
 /* Reverse the guide mascot and its mouth together; keep other pages unchanged. */
 .mascot.mascot-flipped img, .mascot.mascot-flipped .mascot-mouth { transform: scaleX(1); }
+.guide-history-toggle:focus-visible { outline-offset: -3px; }
+.guide-says.is-reask { color: #6b3a14; background: #fff6e8; border: 1px solid #f0d9b5; border-radius: 14px; padding: 12px 16px; }
+.guide-says.is-reask span { color: #9a5b16; }
+
+/* Teaching: a short lesson inside the speech bubble. */
+.guide-lesson { margin: 14px 0 18px; padding: 16px 18px; border-radius: 16px; background: #f1f7f4; border: 1px solid #cfe3d8; }
+.guide-lesson.is-asked { background: #fff9ea; border-color: #eedeb4; }
+.guide-lesson-label { display: block; font-size: 13px; font-weight: 700; color: var(--teal); margin-bottom: 4px; }
+.guide-lesson.is-asked .guide-lesson-label { color: #8a5a12; }
+.guide-lesson strong { display: block; font-size: 17px; margin-bottom: 4px; color: var(--ink); }
+.guide-lesson p { margin: 6px 0 0; font-size: 16px; line-height: 1.55; color: #33413a; }
+.guide-lesson em { font-style: normal; font-weight: 700; }
