@@ -57,7 +57,9 @@ def main() -> None:
             print(f'Updated agent {agent_id} with {len(tool_ids)} tools.')
         else:
             created = client.post(f'{API}/agents/create', json={
-                'name': 'FormFriend guide', 'conversation_config': conversation_config}).raise_for_status().json()
+                'name': 'FormFriend guide', 'conversation_config': conversation_config,
+                'platform_settings': {'overrides': {'conversation_config_override': {'agent': {'first_message': True}}}}
+            }).raise_for_status().json()
             print(f"Created agent. Add this to .env:\nELEVENLABS_AGENT_ID={created['agent_id']}")
 
 

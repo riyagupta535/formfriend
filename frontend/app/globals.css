@@ -781,8 +781,8 @@ background:white}
 .chat-presence.is-speaking { background: #fff4d7; color: #9a7a37; border-color: #eedeb4; }
 .chat-presence.is-speaking > span { color: #cb9a35; }
 .chat-exchange { width: calc(100% - 242px); display: flex; flex-direction: column; gap: 12px; margin: 0 0 24px; }
-.chat-friend-history { align-self: flex-end; max-width: 88%; background: #eef3e9; border-top-right-radius: 5px; }
-.chat-user { align-self: flex-start; max-width: 85%; background: #fff; border: 1px solid #dfe6db; border-top-left-radius: 5px; }
+.chat-friend-history { align-self: flex-start; max-width: 88%; background: #fff; border: 1px solid #dfe6db; border-top-left-radius: 5px; }
+.chat-user { align-self: flex-end; max-width: 85%; background: #eef3e9; border-top-right-radius: 5px; }
 .chat-user .chat-speaker { color: #899882; }
 .chat-user p { color: #3e5948; }
 .chat-user button { font-size: 10px; text-decoration: underline; text-underline-offset: 3px; padding: 10px 0 0; color: #8a9a80; }
@@ -845,11 +845,11 @@ background:white}
 .review-missing{padding:12px;border-radius:12px;background:#fff3da;color:#60491a;font-size:.95rem!important}
 
 /* Voice-guided conversation (/guide) */
-.guide-body { display: grid; grid-template-columns: minmax(0, 1fr) 240px; gap: 22px; padding: 26px 30px 20px; }
+.guide-body { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 22px; padding: 26px 30px 20px; }
 .guide-main { min-width: 0; display: flex; flex-direction: column; gap: 18px; }
 .guide-options { margin: 12px 0 0; padding-left: 20px; font-size: 14px; line-height: 1.8; }
 .guide-transcript { max-height: 360px; overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 12px; scrollbar-width: thin; }
-.guide-side { text-align: center; }
+.guide-side { order: -1; text-align: center; }
 .guide-side .mascot { width: 220px; max-width: 100%; margin: 0 auto; }
 .guide-learned { text-align: left; margin-top: 16px; padding: 14px 16px; border: 1px solid #eedeb4; border-radius: 14px; background: #fff9ea; }
 .guide-learned h3 { font-size: 12px; margin: 0 0 8px; color: #9a7a37; }

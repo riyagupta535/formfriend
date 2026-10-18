@@ -198,3 +198,14 @@ name questions, and replaces the upload session. This is a stopgap: parsed field
 The agent also judges answers itself before saving ("Check before saving" in the prompt, plus a
 required `sense_check` argument on `save_answer`). Code rules catch typed nonsense like digits in
 a name; spoken nonsense ("one, two, three, four") is caught by the agent.
+
+## Taking a break
+
+The first voice connection keeps the configured introduction. Subsequent
+connections on the same page, or sessions with saved progress, refresh the next
+question and override the opening message with that question. Recent transcript
+context is supplied to help preserve unfinished answers and explanations. No
+answers are inferred or saved by the resume operation. The hosted agent must
+allow first-message overrides; the creation script enables that setting for new
+agents. Saved answers survive a break for the session lifetime; recent unsaved
+dialogue context is kept only while the guide page stays open.
