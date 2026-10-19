@@ -2,7 +2,7 @@
 
 https://meet-fomi.vercel.app/
 
-The friendly teal mascot is **Fomy**. The brand mark is a speech bubble with a lowercase **f**.
+The friendly teal mascot is **Fomi**. 
 
 Local multipage prototype: Next.js/React/TypeScript/Tailwind frontend and
 FastAPI backend.
@@ -11,6 +11,8 @@ For setup, architecture, integration status, known limits, and next steps, see
 [the project handoff](docs/HANDOFF.md).
 
 For hosting, see [Vercel frontend + Render backend deployment](docs/DEPLOYMENT.md).
+
+See live demo: https://www.youtube.com/watch?v=t0vz2CFid5k
 
 ## Run
 
